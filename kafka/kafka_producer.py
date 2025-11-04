@@ -228,7 +228,10 @@ def verificar_combined_data():
     import os
     import subprocess
     
-    combined_path = 'data/combined_data.csv'
+    # Ruta absoluta al archivo de datos
+    script_dir = os.path.dirname(os.path.abspath(__file__))  # kafka/
+    project_root = os.path.dirname(script_dir)  # Workshop 3/
+    combined_path = os.path.join(project_root, 'data', 'combined_data.csv')
     
     # Verificar si existe el archivo
     if os.path.exists(combined_path):
@@ -262,8 +265,8 @@ def main():
     # Configuración
     KAFKA_SERVER = 'localhost:9092'
     TOPIC = 'happiness-data'
-    DELAY = 0.5  # Segundos entre registros
-    MAX_RECORDS = 100  # None para enviar todos, 100 para prueba rápida
+    DELAY = 0.1  # Segundos entre registros 
+    MAX_RECORDS = None  
     
     # Verificar y cargar datos combinados del ETL
     logger.info("📊 Verificando datos combinados (2015-2019)...")

@@ -16,7 +16,11 @@ def train_and_save_model(model_path: str = 'modelo_regresion_lineal.pkl'):
     
     # Cargar datos combinados del ETL
     import os
-    combined_path = '../data/combined_data.csv'
+    
+    # Obtener la ruta del directorio raíz del proyecto
+    script_dir = os.path.dirname(os.path.abspath(__file__))  # model_regresion/
+    project_root = os.path.dirname(script_dir)  # Workshop 3/
+    combined_path = os.path.join(project_root, 'data', 'combined_data.csv')
     
     if not os.path.exists(combined_path):
         logger.error(f"❌ No se encontró {combined_path}")

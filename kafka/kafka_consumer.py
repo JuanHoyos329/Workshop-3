@@ -1,6 +1,7 @@
 import json
 import pickle
 import time
+import os
 import numpy as np
 from kafka import KafkaConsumer
 import mysql.connector
@@ -41,6 +42,7 @@ class HappinessKafkaConsumer:
         self.topic = topic
         self.model = None
         self.mysql_config = mysql_config or self._default_mysql_config()
+        self.model_reload_attempts = 0  # Contador de intentos de recarga
         
         # Cargar modelo
         self._load_model(model_path)
@@ -80,7 +82,7 @@ class HappinessKafkaConsumer:
     
     def _load_model(self, model_path: str) -> None:
         """
-        Carga el modelo de ML desde archivo .pkl
+        Carga el modelo ML desde un archivo .pkl.
         
         Args:
             model_path: Ruta al archivo del modelo
@@ -88,13 +90,28 @@ class HappinessKafkaConsumer:
         try:
             with open(model_path, 'rb') as f:
                 self.model = pickle.load(f)
-            logger.info(f"✅ Modelo cargado desde {model_path}")
+            
+            # Verificar que el modelo se cargó correctamente
+            if self.model is None:
+                logger.error(f"❌ El modelo cargado es None")
+                raise ValueError("Modelo cargado es None")
+            
+            # Verificar que tiene el método predict
+            if not hasattr(self.model, 'predict'):
+                logger.error(f"❌ El modelo no tiene método 'predict'")
+                raise ValueError("Modelo inválido: no tiene método 'predict'")
+            
+            logger.info(f"✅ Modelo cargado exitosamente desde {model_path}")
+            logger.info(f"   Tipo de modelo: {type(self.model).__name__}")
+            
         except FileNotFoundError:
             logger.error(f"❌ Archivo de modelo no encontrado: {model_path}")
-            logger.info("💡 Guardando modelo actual...")
-            self._save_current_model(model_path)
+            logger.info("💡 Por favor, ejecuta primero: python model_regresion/model_utils.py")
+            self.model = None
+            raise
         except Exception as e:
             logger.error(f"❌ Error al cargar modelo: {e}")
+            self.model = None
             raise
     
     def _save_current_model(self, model_path: str) -> None:
@@ -133,8 +150,7 @@ class HappinessKafkaConsumer:
         """Crea la tabla de predicciones si no existe"""
         create_table_query = """
         CREATE TABLE IF NOT EXISTS predictions (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            record_id INT NOT NULL,
+            record_id INT AUTO_INCREMENT PRIMARY KEY,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             country VARCHAR(100),
             year INT,
@@ -207,10 +223,30 @@ class HappinessKafkaConsumer:
             Score predicho
         """
         try:
+            # Verificar que el modelo existe
+            if self.model is None:
+                if self.model_reload_attempts < 3:
+                    self.model_reload_attempts += 1
+                    logger.warning(f"⚠️ Modelo no está cargado. Intento de recarga #{self.model_reload_attempts}...")
+                    try:
+                        self._load_model('modelo_regresion_lineal.pkl')
+                        if self.model is not None:
+                            self.model_reload_attempts = 0  # Resetear contador si éxito
+                    except:
+                        pass
+                
+                if self.model is None:
+                    logger.error(f"❌ No se pudo recargar el modelo después de {self.model_reload_attempts} intentos")
+                    return 0.0
+            
+            # Realizar predicción
             prediction = self.model.predict(features)[0]
             return float(prediction)
+            
         except Exception as e:
             logger.error(f"❌ Error en predicción: {e}")
+            logger.error(f"   Tipo de modelo: {type(self.model)}")
+            logger.error(f"   Features shape: {features.shape if features is not None else 'None'}")
             return 0.0
     
     def save_to_mysql(self, record: Dict[str, Any], 
@@ -356,11 +392,15 @@ class HappinessKafkaConsumer:
 def main():
     """Función principal para ejecutar el consumidor"""
     
-    # Configuración
+    # Configuración Kafka
     KAFKA_SERVER = 'localhost:9092'
     TOPIC = 'happiness-data'
     GROUP_ID = 'happiness-prediction-group'
-    MODEL_PATH = 'modelo_regresion_lineal.pkl'
+    
+    # Ruta absoluta al modelo
+    script_dir = os.path.dirname(os.path.abspath(__file__))  # kafka/
+    project_root = os.path.dirname(script_dir)  # Workshop 3/
+    MODEL_PATH = os.path.join(project_root, 'model_regresion', 'modelo_regresion_lineal.pkl')
     
     # Configuración MySQL
     MYSQL_CONFIG = {
