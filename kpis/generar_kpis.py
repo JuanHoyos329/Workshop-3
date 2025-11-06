@@ -1,416 +1,803 @@
+﻿"""
+Interactive KPI Generator - HTML Dashboard
+Happiness Prediction System with Kafka
+"""
+
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import pickle
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 import os
 from datetime import datetime
-import time
+import mysql.connector
+from mysql.connector import Error
+import logging
 
-class GeneradorKPIs:
-    def __init__(self, modelo_path='model_regresion/modelo_regresion_lineal.pkl', csv_folder='csv'):
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-        self.modelo_path = modelo_path
-        self.csv_folder = csv_folder
+
+class KPIGenerator:
+    """Interactive KPI Generator with HTML visualizations"""
+    
+    def __init__(self, mysql_config=None):
+        self.mysql_config = mysql_config or self._default_mysql_config()
         self.df_predictions = None
-        self.metricas = {}
-        self.modelo = None
+        self.metrics_train = {}
+        self.metrics_test = {}
+        self.metrics_total = {}
+        self.fixed_score_range = None # Added for fixed axis range
         
-    def cargar_modelo(self):
-        """Carga el modelo entrenado"""
-        try:
-            # Obtener directorio del script
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            parent_dir = os.path.dirname(script_dir)
-            modelo_full_path = os.path.join(parent_dir, self.modelo_path.replace('../', ''))
-            
-            with open(modelo_full_path, 'rb') as f:
-                self.modelo = pickle.load(f)
-            print(f"Modelo cargado: {modelo_full_path}")
-            
-            # Mostrar features que espera el modelo
-            if hasattr(self.modelo, 'feature_names_in_'):
-                print(f"Features esperadas por el modelo: {list(self.modelo.feature_names_in_)}")
-            
-            return True
-        except Exception as e:
-            print(f"Error al cargar modelo: {e}")
-            return False
+    def _default_mysql_config(self):
+        return {
+            'host': 'localhost',
+            'port': 3306,
+            'database': 'happiness_db',
+            'user': 'root',
+            'password': 'root'
+        }
     
-    def cargar_datos(self):
-        """Carga y procesa todos los años de datos (2015-2019)"""
+    def load_data_from_mysql(self):
         try:
-            # Obtener directorio del script
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            parent_dir = os.path.dirname(script_dir)
-            csv_full_path = os.path.join(parent_dir, self.csv_folder.replace('../', ''))
+            logger.info(" Connecting to MySQL...")
+            conn = mysql.connector.connect(**self.mysql_config)
             
-            # Leer todos los CSVs
-            años = [2015, 2016, 2017, 2018, 2019]
-            dfs = []
+            query = """
+            SELECT 
+                country, region, year,
+                gdp_per_capita, social_support, healthy_life_expectancy,
+                freedom_to_make_life_choices, generosity, perceptions_of_corruption,
+                actual_score, predicted_score, prediction_error,
+                type_model, created_at
+            FROM predictions
+            ORDER BY created_at
+            """
             
-            for año in años:
-                df = pd.read_csv(f'{csv_full_path}/{año}.csv')
-                df['year'] = año
-                dfs.append(df)
+            self.df_predictions = pd.read_sql(query, conn)
+            conn.close()
             
-            # Normalizar cada DataFrame ANTES de concatenar
-            dfs_normalizados = []
-            for df in dfs:
-                # Renombrar columnas al formato estándar
-                columnas_renombrar = {
-                    'Economy (GDP per Capita)': 'GDP per capita',
-                    'Family': 'Social support',
-                    'Health (Life Expectancy)': 'Healthy life expectancy',
-                    'Freedom': 'Freedom to make life choices',
-                    'Trust (Government Corruption)': 'Perceptions of corruption',
-                    'Happiness Score': 'Score',
-                    'Country or region': 'Country',
-                    'Economy..GDP.per.Capita.': 'GDP per capita',
-                    'Health..Life.Expectancy.': 'Healthy life expectancy',
-                    'Trust..Government.Corruption.': 'Perceptions of corruption',
-                    'Happiness.Score': 'Score'
-                }
-                df_norm = df.rename(columns=columnas_renombrar)
-                
-                # Seleccionar solo las columnas necesarias
-                columnas_necesarias = ['Country', 'Score', 'GDP per capita', 'Social support',
-                                      'Healthy life expectancy', 'Freedom to make life choices',
-                                      'Generosity', 'Perceptions of corruption', 'year']
-                
-                # Verificar que todas las columnas existen
-                df_filtrado = df_norm[columnas_necesarias].copy()
-                dfs_normalizados.append(df_filtrado)
+            if len(self.df_predictions) == 0:
+                logger.error(" No data found in the predictions table.")
+                logger.info(" Please run the Kafka producer and consumer first.")
+                return False
             
-            # Concatenar todos los años
-            df_completo = pd.concat(dfs_normalizados, ignore_index=True)
-            print(f"Total de registros cargados: {len(df_completo)} ({len(años)} años)")
-            
-            # Limpiar NaN ANTES de separar X e y
-            df_completo = df_completo.dropna()
-            print(f"Registros limpios (sin NaN): {len(df_completo)}")
-            
-            # Features en el ORDEN EXACTO que se usaron en el entrenamiento
-            features_modelo = [
-                'GDP per capita',
-                'Social support',
-                'Healthy life expectancy',
-                'Freedom to make life choices',
-                'Generosity',
-                'Perceptions of corruption'
-            ]
-            
-            # Extraer features como array numpy (evita problemas con pandas)
-            X = df_completo[features_modelo].values
-            y_true = df_completo['Score'].values
-            
-            # Generar predicciones
-            print("Generando predicciones para todos los años...")
-            start_time = time.time()
-            y_pred = self.modelo.predict(X)
-            end_time = time.time()
-            
-            # Calcular tiempos de procesamiento simulados (basados en el tiempo real)
-            total_time_ms = (end_time - start_time) * 1000
-            avg_time_per_prediction = total_time_ms / len(X)
-            processing_times = np.random.normal(avg_time_per_prediction, avg_time_per_prediction * 0.1, len(X))
-            processing_times = np.abs(processing_times)  # Asegurar valores positivos
-            
-            # Crear DataFrame con predicciones
-            self.df_predictions = pd.DataFrame({
-                'country': df_completo['Country'].values,
-                'year': df_completo['year'].values,
-                'actual_score': y_true,
-                'predicted_score': y_pred,
-                'prediction_error': y_true - y_pred,
-                'processing_time_ms': processing_times
-            })
-            
-            # Agregar features para análisis adicional
-            for i, feature in enumerate(features_modelo):
-                self.df_predictions[feature] = X[:, i]
-            
-            print(f"Total de predicciones generadas: {len(self.df_predictions)}")
-            print(f"Años cubiertos: {sorted(self.df_predictions['year'].unique())}")
-            print(f"Países únicos: {self.df_predictions['country'].nunique()}")
-            
+            logger.info(f" Data loaded: {len(self.df_predictions)} records")
+            logger.info(f"    - Train: {len(self.df_predictions[self.df_predictions['type_model']=='train'])}")
+            logger.info(f"    - Test: {len(self.df_predictions[self.df_predictions['type_model']=='test'])}")
             return True
             
-        except Exception as e:
-            print(f"Error al cargar datos: {e}")
+        except Error as e:
+            logger.error(f" Error connecting to MySQL: {e}")
             return False
     
-    def calcular_metricas(self):
-        """Calcula todas las métricas de desempeño"""
-        if self.df_predictions is None:
-            print("Error: Primero debes cargar los datos")
-            return False
+    def calculate_metrics(self, df, name="Total"):
+        if len(df) == 0:
+            return {}
         
-        y_true = self.df_predictions['actual_score']
-        y_pred = self.df_predictions['predicted_score']
+        y_true = df['actual_score']
+        y_pred = df['predicted_score']
         
-        self.metricas = {
+        metrics = {
+            'name': name,
             'r2': r2_score(y_true, y_pred),
             'mae': mean_absolute_error(y_true, y_pred),
-            'mse': mean_squared_error(y_true, y_pred),
             'rmse': np.sqrt(mean_squared_error(y_true, y_pred)),
             'mape': np.mean(np.abs((y_true - y_pred) / y_true)) * 100,
-            'error_promedio': self.df_predictions['prediction_error'].mean(),
-            'tiempo_promedio': self.df_predictions['processing_time_ms'].mean(),
-            'tiempo_min': self.df_predictions['processing_time_ms'].min(),
-            'tiempo_max': self.df_predictions['processing_time_ms'].max(),
-            'total_predicciones': len(self.df_predictions),
-            'paises_unicos': self.df_predictions['country'].nunique(),
-            'años_unicos': self.df_predictions['year'].nunique()
+            'total_records': len(df),
+            'unique_countries': df['country'].nunique(),
+            'years_covered': df['year'].nunique()
         }
         
-        print("Métricas calculadas exitosamente")
-        return True
+        return metrics
     
-    def generar_tarjetas_kpis(self):
-        """Genera las 8 tarjetas de KPIs"""
-        # Configurar estilo
-        sns.set_style("whitegrid")
+    def calculate_all_metrics(self):
+        logger.info(" Calculating metrics...")
+        df_train = self.df_predictions[self.df_predictions['type_model'] == 'train']
+        df_test = self.df_predictions[self.df_predictions['type_model'] == 'test']
         
-        # Crear figura con 8 tarjetas
-        fig, axes = plt.subplots(2, 4, figsize=(20, 10))
-        fig.suptitle('INDICADORES CLAVE DE DESEMPEÑO (KPIs)', fontsize=20, fontweight='bold', y=0.98)
-        
-        # Lista de KPIs
-        kpis = [
-            {'titulo': 'R² Score', 'valor': self.metricas['r2'], 'formato': '{:.4f}', 
-             'desc': 'Coeficiente de Determinación', 'color': '#2E86AB'},
-            {'titulo': 'MAE', 'valor': self.metricas['mae'], 'formato': '{:.4f}', 
-             'desc': 'Mean Absolute Error', 'color': '#A23B72'},
-            {'titulo': 'RMSE', 'valor': self.metricas['rmse'], 'formato': '{:.4f}', 
-             'desc': 'Root Mean Squared Error', 'color': '#F18F01'},
-            {'titulo': 'MAPE', 'valor': self.metricas['mape'], 'formato': '{:.2f}%', 
-             'desc': 'Mean Absolute % Error', 'color': '#6A994E'},
-            {'titulo': 'Tiempo Procesamiento', 'valor': self.metricas['tiempo_promedio'], 'formato': '{:.2f} ms', 
-             'desc': 'Promedio por predicción', 'color': '#E63946'},
-            {'titulo': 'Total Predicciones', 'valor': self.metricas['total_predicciones'], 'formato': '{:.0f}', 
-             'desc': 'Registros procesados', 'color': '#457B9D'},
-            {'titulo': 'Países Analizados', 'valor': self.metricas['paises_unicos'], 'formato': '{:.0f}', 
-             'desc': 'Cobertura global', 'color': '#F72585'},
-            {'titulo': 'Años Cubiertos', 'valor': self.metricas['años_unicos'], 'formato': '{:.0f}', 
-             'desc': 'Periodo de datos', 'color': '#06FFA5'}
-        ]
-        
-        # Generar cada tarjeta
-        for idx, (ax, kpi) in enumerate(zip(axes.flatten(), kpis)):
-            ax.set_xlim(0, 10)
-            ax.set_ylim(0, 10)
-            ax.axis('off')
-            
-            # Fondo coloreado
-            rect = plt.Rectangle((0, 0), 10, 10, facecolor=kpi['color'], alpha=0.2)
-            ax.add_patch(rect)
-            
-            # Título
-            ax.text(5, 7.5, kpi['titulo'], ha='center', va='center', 
-                   fontsize=16, fontweight='bold', color=kpi['color'])
-            
-            # Valor principal
-            valor_formateado = kpi['formato'].format(kpi['valor'])
-            ax.text(5, 4.5, valor_formateado, ha='center', va='center', 
-                   fontsize=48, fontweight='bold', color=kpi['color'])
-            
-            # Descripción
-            ax.text(5, 1.5, kpi['desc'], ha='center', va='center', 
-                   fontsize=12, style='italic', color='gray')
-        
-        plt.tight_layout()
-        
-        # Guardar en la carpeta kpis/
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        output_path = os.path.join(script_dir, 'dashboard_kpis_cards.png')
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        print(f"✓ Gráfico guardado: {output_path}")
-        plt.close()
+        self.metrics_train = self.calculate_metrics(df_train, "Train")
+        self.metrics_test = self.calculate_metrics(df_test, "Test")
+        self.metrics_total = self.calculate_metrics(self.df_predictions, "Total")
+        logger.info(" Metrics calculated successfully")
     
-    def generar_dashboard_consolidado(self):
-        """Genera el dashboard consolidado de performance"""
-        fig = plt.figure(figsize=(20, 12))
-        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+    def create_kpi_cards(self):
+        """Creates KPI cards"""
+        fig = make_subplots(
+            rows=2, cols=4,
+            specs=[[{'type': 'indicator'}, {'type': 'indicator'}, {'type': 'indicator'}, {'type': 'indicator'}],
+                   [{'type': 'indicator'}, {'type': 'indicator'}, {'type': 'indicator'}, {'type': 'indicator'}]],
+            subplot_titles=('R² Score', 'MAE', 'RMSE', 'MAPE',
+                          'Total Records', 'Unique Countries', 'Years Covered', 'Average Error')
+        )
         
-        # 1. Predicciones vs Valores Reales (grande, ocupa 2x2)
-        ax1 = fig.add_subplot(gs[0:2, 0:2])
-        ax1.scatter(self.df_predictions['actual_score'], self.df_predictions['predicted_score'], 
-                   alpha=0.6, s=100, c='#2E86AB', edgecolors='white', linewidth=0.5)
-        ax1.plot([self.df_predictions['actual_score'].min(), self.df_predictions['actual_score'].max()],
-                 [self.df_predictions['actual_score'].min(), self.df_predictions['actual_score'].max()],
-                 'r--', lw=3, label='Predicción Perfecta')
-        ax1.set_xlabel('Happiness Score Real', fontsize=12, fontweight='bold')
-        ax1.set_ylabel('Happiness Score Predicho', fontsize=12, fontweight='bold')
-        ax1.set_title('Predicciones vs Valores Reales', fontsize=14, fontweight='bold', pad=15)
-        ax1.legend(fontsize=10)
-        ax1.grid(True, alpha=0.3)
-        ax1.text(0.05, 0.95, f'R² = {self.metricas["r2"]:.4f}', transform=ax1.transAxes, 
-                fontsize=14, fontweight='bold', va='top',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        m = self.metrics_total
         
-        # 2. Distribución de Errores
-        ax2 = fig.add_subplot(gs[0, 2])
-        ax2.hist(self.df_predictions['prediction_error'], bins=30, color='#A23B72', alpha=0.7, edgecolor='white')
-        ax2.axvline(0, color='red', linestyle='--', linewidth=2, label='Error = 0')
-        ax2.set_xlabel('Error de Predicción', fontsize=10, fontweight='bold')
-        ax2.set_ylabel('Frecuencia', fontsize=10, fontweight='bold')
-        ax2.set_title('Distribución de Errores', fontsize=12, fontweight='bold')
-        ax2.legend(fontsize=8)
-        ax2.grid(True, alpha=0.3, axis='y')
+        fig.add_trace(go.Indicator(mode="number", value=m['r2'], number={'valueformat': '.4f'}), row=1, col=1)
+        fig.add_trace(go.Indicator(mode="number", value=m['mae'], number={'valueformat': '.4f'}), row=1, col=2)
+        fig.add_trace(go.Indicator(mode="number", value=m['rmse'], number={'valueformat': '.4f'}), row=1, col=3)
+        fig.add_trace(go.Indicator(mode="number", value=m['mape'], number={'valueformat': '.2f'}), row=1, col=4)
+        fig.add_trace(go.Indicator(mode="number", value=m['total_records'], number={'valueformat': '.0f'}), row=2, col=1)
+        fig.add_trace(go.Indicator(mode="number", value=m['unique_countries'], number={'valueformat': '.0f'}), row=2, col=2)
+        fig.add_trace(go.Indicator(mode="number", value=m['years_covered'], number={'valueformat': '.0f'}), row=2, col=3)
+        fig.add_trace(go.Indicator(mode="number", value=self.df_predictions['prediction_error'].abs().mean(), number={'valueformat': '.4f'}), row=2, col=4)
         
-        # 3. Top 10 Países
-        ax3 = fig.add_subplot(gs[1, 2])
-        top_countries = self.df_predictions.nlargest(10, 'predicted_score')[['country', 'predicted_score']]
-        colors_gradient = plt.cm.viridis(np.linspace(0.3, 0.9, 10))
-        ax3.barh(range(10), top_countries['predicted_score'], color=colors_gradient, edgecolor='white', linewidth=1)
-        ax3.set_yticks(range(10))
-        ax3.set_yticklabels(top_countries['country'], fontsize=9)
-        ax3.set_xlabel('Happiness Score Predicho', fontsize=10, fontweight='bold')
-        ax3.set_title('Top 10 Países Más Felices', fontsize=12, fontweight='bold')
-        ax3.invert_yaxis()
-        ax3.grid(True, alpha=0.3, axis='x')
+        fig.update_layout(height=500, showlegend=False)
+        return fig
+    
+    def create_predictions_vs_actual(self, df_data=None, name='All', fixed_range=None):
+        """
+        Scatter plot of predictions.
+        Modified to accept an optional fixed_range for axis limits.
+        """
+        df = df_data if df_data is not None else self.df_predictions
         
-        # 4. Evolución Temporal
-        ax4 = fig.add_subplot(gs[2, 0])
-        if self.metricas['años_unicos'] > 1:
-            temporal = self.df_predictions.groupby('year').agg({
-                'predicted_score': 'mean',
-                'actual_score': 'mean'
-            }).reset_index()
-            ax4.plot(temporal['year'], temporal['predicted_score'], marker='o', linewidth=3, 
-                    markersize=8, label='Predicho', color='#F18F01')
-            ax4.plot(temporal['year'], temporal['actual_score'], marker='s', linewidth=3, 
-                    markersize=8, label='Real', color='#6A994E')
-            ax4.set_xlabel('Año', fontsize=10, fontweight='bold')
-            ax4.set_ylabel('Happiness Score Promedio', fontsize=10, fontweight='bold')
-            ax4.set_title('Evolución Temporal', fontsize=12, fontweight='bold')
-            ax4.legend(fontsize=9)
-            ax4.grid(True, alpha=0.3)
+        fig = go.Figure()
+
+        if name == 'All':
+            df_train = df[df['type_model'] == 'train']
+            df_test = df[df['type_model'] == 'test']
+            
+            fig.add_trace(go.Scatter(
+                x=df_train['actual_score'], y=df_train['predicted_score'],
+                mode='markers', name='Train',
+                marker=dict(size=8, color='#2E86AB', opacity=0.6),
+                text=df_train['country'],
+                hovertemplate='<b>%{text}</b><br>Actual: %{x:.2f}<br>Predicted: %{y:.2f}<extra></extra>'
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=df_test['actual_score'], y=df_test['predicted_score'],
+                mode='markers', name='Test',
+                marker=dict(size=8, color='#F18F01', opacity=0.6),
+                text=df_test['country'],
+                hovertemplate='<b>%{text}</b><br>Actual: %{x:.2f}<br>Predicted: %{y:.2f}<extra></extra>'
+            ))
+        else: # For 'Train' or 'Test' filtered views
+            color = '#2E86AB' if name == 'Train' else '#F18F01'
+            fig.add_trace(go.Scatter(
+                x=df['actual_score'], y=df['predicted_score'],
+                mode='markers', name=name,
+                marker=dict(size=8, color=color, opacity=0.6),
+                text=df['country'],
+                hovertemplate='<b>%{text}</b><br>Actual: %{x:.2f}<br>Predicted: %{y:.2f}<extra></extra>'
+            ))
+
+        # Use fixed range if provided, otherwise calculate based on all data
+        if fixed_range:
+            min_val, max_val = fixed_range
         else:
-            ax4.text(0.5, 0.5, f'Un solo año analizado:\n{self.df_predictions["year"].iloc[0]}', 
-                    ha='center', va='center', fontsize=14, fontweight='bold',
-                    transform=ax4.transAxes)
-            ax4.set_title('Evolución Temporal', fontsize=12, fontweight='bold')
-            ax4.axis('off')
+            min_val = min(df['actual_score'].min(), df['predicted_score'].min())
+            max_val = max(df['actual_score'].max(), df['predicted_score'].max())
+            # Add a small buffer
+            min_val -= 0.1
+            max_val += 0.1
         
-        # 5. Tiempos de Procesamiento
-        ax5 = fig.add_subplot(gs[2, 1])
-        ax5.hist(self.df_predictions['processing_time_ms'], bins=30, color='#E63946', alpha=0.7, edgecolor='white')
-        ax5.axvline(self.metricas['tiempo_promedio'], color='yellow', 
-                   linestyle='--', linewidth=2, label=f'Media: {self.metricas["tiempo_promedio"]:.2f} ms')
-        ax5.set_xlabel('Tiempo de Procesamiento (ms)', fontsize=10, fontweight='bold')
-        ax5.set_ylabel('Frecuencia', fontsize=10, fontweight='bold')
-        ax5.set_title('Performance del Streaming', fontsize=12, fontweight='bold')
-        ax5.legend(fontsize=8)
-        ax5.grid(True, alpha=0.3, axis='y')
+        # Perfect Prediction line
+        fig.add_trace(go.Scatter(
+            x=[min_val, max_val], y=[min_val, max_val],
+            mode='lines', name='Perfect Prediction',
+            line=dict(color='red', width=2, dash='dash')
+        ))
         
-        # 6. Resumen de Métricas
-        ax6 = fig.add_subplot(gs[2, 2])
-        ax6.axis('off')
-        metricas_texto = f"""
-RESUMEN DE MÉTRICAS
+        layout_updates = dict(
+            xaxis_title='Actual Happiness Score',
+            yaxis_title='Predicted Happiness Score',
+            height=600,
+            showlegend=True
+        )
 
-R² Score: {self.metricas['r2']:.4f}
-MAE: {self.metricas['mae']:.4f}
-RMSE: {self.metricas['rmse']:.4f}
-MAPE: {self.metricas['mape']:.2f}%
+        # IMPORTANT: Set fixed ranges
+        if fixed_range:
+             # Apply fixed range calculated from ALL data to prevent resizing
+            layout_updates['xaxis_range'] = [min_val, max_val]
+            layout_updates['yaxis_range'] = [min_val, max_val]
 
-Predicciones: {self.metricas['total_predicciones']}
-Países: {self.metricas['paises_unicos']}
-Tiempo Promedio: {self.metricas['tiempo_promedio']:.2f} ms
-"""
-        ax6.text(0.1, 0.9, metricas_texto, transform=ax6.transAxes, 
-                fontsize=11, verticalalignment='top', fontfamily='monospace',
-                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
+        fig.update_layout(**layout_updates)
+        return fig
+    
+    def create_top10_countries(self):
+        """Top 10 Happiest Countries - Actual, Train, Test"""
+        # Actual Data
+        df_actual = self.df_predictions.groupby('country').agg({
+            'actual_score': 'mean'
+        }).reset_index()
         
-        plt.suptitle('DASHBOARD DE PERFORMANCE - SISTEMA DE STREAMING CON KAFKA', 
-                    fontsize=18, fontweight='bold', y=0.995)
+        # Train
+        df_train = self.df_predictions[self.df_predictions['type_model'] == 'train'].groupby('country').agg({
+            'predicted_score': 'mean'
+        }).reset_index()
         
-        # Guardar en la carpeta kpis/
+        # Test
+        df_test = self.df_predictions[self.df_predictions['type_model'] == 'test'].groupby('country').agg({
+            'predicted_score': 'mean'
+        }).reset_index()
+        
+        # Merge
+        df_avg = df_actual.merge(df_train, on='country', how='left', suffixes=('', '_train'))
+        df_avg = df_avg.merge(df_test, on='country', how='left', suffixes=('', '_test'))
+        
+        # Fill NaN values with 0 for countries with no test/train data (optional, but robust)
+        df_avg['predicted_score'] = df_avg['predicted_score'].fillna(0)
+        df_avg['predicted_score_test'] = df_avg['predicted_score_test'].fillna(0)
+        
+        # Top 10
+        top10 = df_avg.nlargest(10, 'actual_score').sort_values('actual_score')
+        
+        fig = go.Figure()
+        
+        # Actual
+        fig.add_trace(go.Bar(
+            y=top10['country'], 
+            x=top10['actual_score'], 
+            name='Actual',
+            orientation='h', 
+            marker=dict(color='#6A994E')
+        ))
+        
+        # Train
+        fig.add_trace(go.Bar(
+            y=top10['country'], 
+            x=top10['predicted_score'], 
+            name='Train Prediction',
+            orientation='h', 
+            marker=dict(color='#2E86AB')
+        ))
+        
+        # Test
+        fig.add_trace(go.Bar(
+            y=top10['country'], 
+            x=top10['predicted_score_test'], 
+            name='Test Prediction',
+            orientation='h', 
+            marker=dict(color='#F18F01')
+        ))
+        
+        fig.update_layout(
+            xaxis_title='Happiness Score',
+            barmode='group', 
+            height=500,
+            showlegend=True
+        )
+        return fig
+    
+    def create_time_series_evolution(self):
+        """Temporal evolution by year - Only 3 lines: Actual, Train, Test"""
+        # Actual Data (average of all)
+        df_actual = self.df_predictions.groupby('year').agg({
+            'actual_score': 'mean'
+        }).reset_index()
+        
+        # Train
+        df_train = self.df_predictions[self.df_predictions['type_model'] == 'train'].groupby('year').agg({
+            'predicted_score': 'mean'
+        }).reset_index()
+        
+        # Test
+        df_test = self.df_predictions[self.df_predictions['type_model'] == 'test'].groupby('year').agg({
+            'predicted_score': 'mean'
+        }).reset_index()
+        
+        fig = go.Figure()
+        
+        # Actual Line
+        fig.add_trace(go.Scatter(
+            x=df_actual['year'], 
+            y=df_actual['actual_score'],
+            mode='lines+markers', 
+            name='Actual',
+            line=dict(color='#6A994E', width=4),
+            marker=dict(size=10)
+        ))
+        
+        # Train Line
+        fig.add_trace(go.Scatter(
+            x=df_train['year'], 
+            y=df_train['predicted_score'],
+            mode='lines+markers', 
+            name='Train Prediction',
+            line=dict(color='#2E86AB', width=3),
+            marker=dict(size=8)
+        ))
+        
+        # Test Line
+        fig.add_trace(go.Scatter(
+            x=df_test['year'], 
+            y=df_test['predicted_score'],
+            mode='lines+markers', 
+            name='Test Prediction',
+            line=dict(color='#F18F01', width=3),
+            marker=dict(size=8)
+        ))
+        
+        fig.update_layout(
+            xaxis_title='Year',
+            yaxis_title='Average Happiness Score',
+            height=500,
+            legend=dict(x=0.02, y=0.98),
+            showlegend=True
+        )
+        return fig
+    
+    def create_happiness_by_region(self):
+        """Happiest and least happy regions - 3 bars: Actual, Train, Test"""
+        # Actual Data
+        df_actual = self.df_predictions.groupby('region').agg({
+            'actual_score': 'mean'
+        }).reset_index()
+        
+        # Train
+        df_train = self.df_predictions[self.df_predictions['type_model'] == 'train'].groupby('region').agg({
+            'predicted_score': 'mean'
+        }).reset_index()
+        
+        # Test
+        df_test = self.df_predictions[self.df_predictions['type_model'] == 'test'].groupby('region').agg({
+            'predicted_score': 'mean'
+        }).reset_index()
+        
+        # Merge all into one DataFrame
+        df_region = df_actual.merge(df_train, on='region', how='left', suffixes=('', '_train'))
+        df_region = df_region.merge(df_test, on='region', how='left', suffixes=('', '_test'))
+        df_region = df_region.sort_values('actual_score', ascending=False)
+        
+        fig = go.Figure()
+        
+        # Actual Bar
+        fig.add_trace(go.Bar(
+            x=df_region['region'], 
+            y=df_region['actual_score'],
+            name='Actual', 
+            marker=dict(color='#6A994E')
+        ))
+        
+        # Train Bar
+        fig.add_trace(go.Bar(
+            x=df_region['region'], 
+            y=df_region['predicted_score'],
+            name='Train Prediction', 
+            marker=dict(color='#2E86AB')
+        ))
+        
+        # Test Bar
+        fig.add_trace(go.Bar(
+            x=df_region['region'], 
+            y=df_region['predicted_score_test'],
+            name='Test Prediction', 
+            marker=dict(color='#F18F01')
+        ))
+        
+        fig.update_layout(
+            xaxis_title='Region',
+            yaxis_title='Average Happiness Score',
+            barmode='group', 
+            height=500,
+            xaxis_tickangle=-45,
+            showlegend=True
+        )
+        return fig
+    
+    def create_error_distribution(self):
+        """Error distribution"""
+        fig = go.Figure()
+        
+        df_train = self.df_predictions[self.df_predictions['type_model'] == 'train']
+        fig.add_trace(go.Histogram(x=df_train['prediction_error'], name='Train',
+                                     marker=dict(color='#2E86AB', opacity=0.7), nbinsx=30))
+        
+        df_test = self.df_predictions[self.df_predictions['type_model'] == 'test']
+        fig.add_trace(go.Histogram(x=df_test['prediction_error'], name='Test',
+                                     marker=dict(color='#F18F01', opacity=0.7), nbinsx=30))
+        
+        fig.add_vline(x=0, line_dash="dash", line_color="red", annotation_text="Error = 0")
+        
+        fig.update_layout(xaxis_title='Prediction Error',
+                          yaxis_title='Frequency',
+                          barmode='overlay', 
+                          height=500,
+                          showlegend=True)
+        return fig
+    
+    def create_happiness_map(self):
+        """Geographical map of happiness score by country"""
+        # Group by country and get average
+        df_map = self.df_predictions.groupby('country').agg({
+            'actual_score': 'mean',
+            'predicted_score': 'mean',
+            'region': 'first'
+        }).reset_index()
+        
+        # Create map with Choropleth
+        fig = go.Figure(data=go.Choropleth(
+            locations=df_map['country'],
+            locationmode='country names',
+            z=df_map['actual_score'],
+            text=df_map['country'],
+            colorscale='RdYlGn',  # Red-Yellow-Green
+            autocolorscale=False,
+            reversescale=False,
+            marker_line_color='darkgray',
+            marker_line_width=0.5,
+            colorbar_title='Happiness<br>Score',
+            hovertemplate='<b>%{text}</b><br>Happiness Score: %{z:.2f}<extra></extra>'
+        ))
+        
+        fig.update_layout(
+            geo=dict(
+                showframe=False,
+                showcoastlines=True,
+                projection_type='equirectangular'
+            ),
+            height=600
+        )
+        return fig
+    
+    def create_metrics_table(self):
+        """Comparative metrics table"""
+        html_table = f"""
+        <div style="margin: 20px;">
+            <h2 style="text-align: center; color: #2E86AB;">Metrics Comparison: Train vs Test</h2>
+            <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+                <thead>
+                    <tr style="background-color: #2E86AB; color: white;">
+                        <th style="padding: 12px; border: 1px solid #ddd;">Metric</th>
+                        <th style="padding: 12px; border: 1px solid #ddd;">Train</th>
+                        <th style="padding: 12px; border: 1px solid #ddd;">Test</th>
+                        <th style="padding: 12px; border: 1px solid #ddd;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="background-color: #f9f9f9;">
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">R² Score</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_train.get('r2', 0):.4f}</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_test.get('r2', 0):.4f}</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_total.get('r2', 0):.4f}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">MAE</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_train.get('mae', 0):.4f}</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_test.get('mae', 0):.4f}</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_total.get('mae', 0):.4f}</td>
+                    </tr>
+                    <tr style="background-color: #f9f9f9;">
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">RMSE</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_train.get('rmse', 0):.4f}</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_test.get('rmse', 0):.4f}</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_total.get('rmse', 0):.4f}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">MAPE (%)</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_train.get('mape', 0):.2f}%</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_test.get('mape', 0):.2f}%</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_total.get('mape', 0):.2f}%</td>
+                    </tr>
+                    <tr style="background-color: #f9f9f9;">
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Records</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_train.get('total_records', 0)}</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_test.get('total_records', 0)}</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_total.get('total_records', 0)}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        """
+        return html_table
+    
+    def create_filtered_visualizations(self, filter_type='all', fixed_range=None):
+        """Creates filtered versions of the scatter plot visualization (Predictions vs Actuals)"""
+        if filter_type == 'train':
+            df = self.df_predictions[self.df_predictions['type_model'] == 'train']
+        elif filter_type == 'test':
+            df = self.df_predictions[self.df_predictions['type_model'] == 'test']
+        else:
+            df = self.df_predictions
+
+        # Use the general method with filter specific data and name
+        if filter_type == 'all':
+            return self.create_predictions_vs_actual(df, 'All', fixed_range)
+        else:
+            return self.create_predictions_vs_actual(df, filter_type.title(), fixed_range)
+    
+    def create_visualizations_by_year(self, year):
+        """Creates visualizations filtered by year"""
+        df_year = self.df_predictions[self.df_predictions['year'] == year]
+        
+        # Top 10 by year
+        df_actual = df_year.groupby('country').agg({'actual_score': 'mean'}).reset_index()
+        df_train = df_year[df_year['type_model'] == 'train'].groupby('country').agg({'predicted_score': 'mean'}).reset_index()
+        df_test = df_year[df_year['type_model'] == 'test'].groupby('country').agg({'predicted_score': 'mean'}).reset_index()
+        
+        df_avg = df_actual.merge(df_train, on='country', how='left', suffixes=('', '_train'))
+        df_avg = df_avg.merge(df_test, on='country', how='left', suffixes=('', '_test'))
+        top10 = df_avg.nlargest(10, 'actual_score').sort_values('actual_score')
+        
+        fig = go.Figure()
+        fig.add_trace(go.Bar(y=top10['country'], x=top10['actual_score'], name='Actual', orientation='h', marker=dict(color='#6A994E')))
+        fig.add_trace(go.Bar(y=top10['country'], x=top10['predicted_score'], name='Train Prediction', orientation='h', marker=dict(color='#2E86AB')))
+        fig.add_trace(go.Bar(y=top10['country'], x=top10['predicted_score_test'], name='Test Prediction', orientation='h', marker=dict(color='#F18F01')))
+        
+        fig.update_layout(title=f'Top 10 Happiest Countries - Year {year}', xaxis_title='Happiness Score', barmode='group', height=500)
+        return fig
+    
+    def create_visualizations_by_region(self, region):
+        """Creates visualizations filtered by region"""
+        df_region = self.df_predictions[self.df_predictions['region'] == region]
+        
+        # Top countries in the region
+        df_actual = df_region.groupby('country').agg({'actual_score': 'mean'}).reset_index()
+        df_train = df_region[df_region['type_model'] == 'train'].groupby('country').agg({'predicted_score': 'mean'}).reset_index()
+        df_test = df_region[df_region['type_model'] == 'test'].groupby('country').agg({'predicted_score': 'mean'}).reset_index()
+        
+        df_avg = df_actual.merge(df_train, on='country', how='left', suffixes=('', '_train'))
+        df_avg = df_avg.merge(df_test, on='country', how='left', suffixes=('', '_test'))
+        df_avg = df_avg.sort_values('actual_score', ascending=False).head(10).sort_values('actual_score')
+        
+        fig = go.Figure()
+        fig.add_trace(go.Bar(y=df_avg['country'], x=df_avg['actual_score'], name='Actual', orientation='h', marker=dict(color='#6A994E')))
+        fig.add_trace(go.Bar(y=df_avg['country'], x=df_avg['predicted_score'], name='Train Prediction', orientation='h', marker=dict(color='#2E86AB')))
+        fig.add_trace(go.Bar(y=df_avg['country'], x=df_avg['predicted_score_test'], name='Test Prediction', orientation='h', marker=dict(color='#F18F01')))
+        
+        fig.update_layout(title=f'Top Countries - {region}', xaxis_title='Happiness Score', barmode='group', height=500)
+        return fig
+
+    def generate_html_dashboard(self):
+        """Generates the complete HTML dashboard"""
+        logger.info("Generating HTML dashboard...")
+
+        # Calculate fixed range for scatter plot once (to keep plot size constant)
+        min_score = min(self.df_predictions['actual_score'].min(), self.df_predictions['predicted_score'].min())
+        max_score = max(self.df_predictions['actual_score'].max(), self.df_predictions['predicted_score'].max())
+        # Add a small buffer to the max/min values
+        self.fixed_score_range = (min_score - 0.1, max_score + 0.1)
+        
+        # Create main visualizations
+        fig_kpis = self.create_kpi_cards()
+        fig_mapa = self.create_happiness_map()
+        fig_top10 = self.create_top10_countries()
+        fig_temporal = self.create_time_series_evolution()
+        fig_regiones = self.create_happiness_by_region()
+        fig_errores = self.create_error_distribution()
+        tabla_metricas = self.create_metrics_table()
+        
+        # Create filtered versions of predictions vs actuals (using fixed range)
+        fixed_range = self.fixed_score_range
+        fig_pred_all = self.create_filtered_visualizations('all', fixed_range)
+        fig_pred_train = self.create_filtered_visualizations('train', fixed_range)
+        fig_pred_test = self.create_filtered_visualizations('test', fixed_range)
+        
+        # Create filtered versions by year
+        years = sorted(self.df_predictions['year'].unique())
+        figs_by_year = {}
+        for year in years:
+            figs_by_year[year] = self.create_visualizations_by_year(year)
+        
+        # Create filtered versions by region
+        regions = sorted(self.df_predictions['region'].unique())
+        figs_by_region = {}
+        for region in regions:
+            figs_by_region[region] = self.create_visualizations_by_region(region)
+        
+        # Convert figures to HTML using to_html()
+        kpis_html = fig_kpis.to_html(full_html=False, include_plotlyjs='cdn')
+        mapa_html = fig_mapa.to_html(full_html=False, include_plotlyjs=False)
+        top10_html = fig_top10.to_html(full_html=False, include_plotlyjs=False)
+        temporal_html = fig_temporal.to_html(full_html=False, include_plotlyjs=False)
+        regiones_html = fig_regiones.to_html(full_html=False, include_plotlyjs=False)
+        errores_html = fig_errores.to_html(full_html=False, include_plotlyjs=False)
+        
+        # Filtered versions
+        pred_all_html = fig_pred_all.to_html(full_html=False, include_plotlyjs=False)
+        pred_train_html = fig_pred_train.to_html(full_html=False, include_plotlyjs=False)
+        pred_test_html = fig_pred_test.to_html(full_html=False, include_plotlyjs=False)
+        
+        # By year
+        top10_by_year_html = {}
+        for year in years:
+            top10_by_year_html[year] = figs_by_year[year].to_html(full_html=False, include_plotlyjs=False)
+        
+        # By region
+        top10_by_region_html = {}
+        for region in regions:
+            top10_by_region_html[region] = figs_by_region[region].to_html(full_html=False, include_plotlyjs=False)
+        
+        # Generate HTML
+        html_content = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KPI Dashboard - Happiness Prediction</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }}
+        h1 {{
+            text-align: center;
+            color: #1a1a1a;
+            font-size: 2.2em;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }}
+        .subtitle {{
+            text-align: center;
+            color: #666;
+            font-size: 1.1em;
+            margin-bottom: 40px;
+            font-weight: 400;
+        }}
+        .filters-panel {{
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 25px;
+            margin: 30px 0;
+        }}
+        .filter-group {{
+            margin-bottom: 20px;
+        }}
+        .filter-group:last-child {{
+            margin-bottom: 0;
+        }}
+        .filter-label {{
+            font-size: 1em;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 10px;
+            display: block;
+        }}
+        .btn {{
+            padding: 10px 18px;
+            margin: 4px;
+            font-size: 0.95em;
+            border-radius: 4px;
+            border: 1px solid #dee2e6;
+            background: white;
+            color: #495057;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 500;
+        }}
+        .btn:hover {{
+            background-color: #e9ecef;
+        }}
+        .btn.active {{
+            background-color: #0066cc;
+            color: white;
+            border-color: #0066cc;
+        }}
+        .chart-container {{
+            margin: 30px 0;
+            padding: 25px;
+            background-color: white;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+        }}
+        .section-title {{
+            color: #1a1a1a;
+            font-size: 1.4em;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 2px solid #0066cc;
+            font-weight: 600;
+        }}
+        .info-box {{
+            background-color: #e7f3ff;
+            border-left: 4px solid #0066cc;
+            padding: 15px 20px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }}
+        .info-box p {{
+            margin: 5px 0;
+            color: #333;
+            font-size: 0.95em;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>KPI Dashboard - Happiness Prediction System</h1>
+        <div class="subtitle">Streaming System with Apache Kafka</div>
+        <div style="text-align: center; margin-bottom: 30px; color: #999; font-size: 0.9em;">
+            Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        </div>
+        
+        <div class="chart-container">
+            <h2 class="section-title">Key Performance Indicators</h2>
+            {kpis_html}
+        </div>
+        
+        {tabla_metricas}
+        
+        <div class="chart-container">
+            <h2 class="section-title">World Happiness Map</h2>
+            """ + mapa_html + """
+        </div>
+        
+        <div class="chart-container">
+            <h2 class="section-title">Predictions</h2>
+            
+            <div style="margin-bottom: 20px;">
+                <label class="filter-label">Data Type:</label>
+                <button onclick="filterPredictions('all')" id="btnPredAll" class="btn active">All</button>
+                <button onclick="filterPredictions('train')" id="btnPredTrain" class="btn">Train</button>
+                <button onclick="filterPredictions('test')" id="btnPredTest" class="btn">Test</button>
+            </div>
+            
+            <div id="predAll">""" + pred_all_html + """</div>
+            <div id="predTrain" style="display: none;">""" + pred_train_html + """</div>
+            <div id="predTest" style="display: none;">""" + pred_test_html + """</div>
+        </div>
+        
+        <div class="chart-container">
+            <h2 class="section-title">Top 10 Happiest Countries</h2>
+            """ + top10_html + """
+        </div>
+        
+        <div class="chart-container">
+            <h2 class="section-title">Temporal Evolution of Happiness Score</h2>
+""" + temporal_html + """
+        </div>
+        
+        <div class="chart-container">
+            <h2 class="section-title">Happiness Score by Region</h2>
+""" + regiones_html + """
+        </div>
+        
+        <div class="chart-container">
+            <h2 class="section-title">Prediction Error Distribution</h2>
+""" + errores_html + """
+        </div>
+    </div>
+    
+    <script>
+        // Filter for Predictions
+        function filterPredictions(type) {{
+            // Hide all
+            document.getElementById('predAll').style.display = 'none';
+            document.getElementById('predTrain').style.display = 'none';
+            document.getElementById('predTest').style.display = 'none';
+
+            // Deactivate all buttons
+            document.getElementById('btnPredAll').classList.remove('active');
+            document.getElementById('btnPredTrain').classList.remove('active');
+            document.getElementById('btnPredTest').classList.remove('active');
+
+            // Show selected and activate button
+            document.getElementById('pred' + type.charAt(0).toUpperCase() + type.slice(1)).style.display = 'block';
+            document.getElementById('btnPred' + type.charAt(0).toUpperCase() + type.slice(1)).classList.add('active');
+        }}
+    </script>
+</body>
+</html>
+        """
+        
+        # Save HTML in the kpis folder
+        import os
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        output_path = os.path.join(script_dir, 'dashboard_performance.png')
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        print(f"✓ Gráfico guardado: {output_path}")
-        plt.close()
-    
-    def generar_reporte_consola(self):
-        """Genera un reporte en consola con las métricas"""
-        print("\n" + "="*80)
-        print("REPORTE DE KPIs - SISTEMA DE STREAMING CON KAFKA")
-        print("="*80)
-        print(f"Fecha de generación: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("\n--- MÉTRICAS DEL MODELO ---")
-        print(f"R² Score:                 {self.metricas['r2']:.4f} ({self.metricas['r2']*100:.2f}%)")
-        print(f"MAE:                      {self.metricas['mae']:.4f}")
-        print(f"RMSE:                     {self.metricas['rmse']:.4f}")
-        print(f"MAPE:                     {self.metricas['mape']:.2f}%")
-        print(f"Error Promedio:           {self.metricas['error_promedio']:.4f}")
+        file_path = os.path.join(script_dir, 'dashboard_kpis.html')
         
-        print("\n--- PERFORMANCE DEL SISTEMA ---")
-        print(f"Tiempo Procesamiento Promedio: {self.metricas['tiempo_promedio']:.2f} ms")
-        print(f"Tiempo Procesamiento Mínimo:   {self.metricas['tiempo_min']:.2f} ms")
-        print(f"Tiempo Procesamiento Máximo:   {self.metricas['tiempo_max']:.2f} ms")
-        
-        print("\n--- DATOS PROCESADOS ---")
-        print(f"Total Predicciones:       {self.metricas['total_predicciones']}")
-        print(f"Países Analizados:        {self.metricas['paises_unicos']}")
-        print(f"Años Cubiertos:           {self.metricas['años_unicos']}")
-        
-        # Top 5 países
-        print("\n--- TOP 5 PAÍSES (Happiness Score Predicho) ---")
-        top5 = self.df_predictions.nlargest(5, 'predicted_score')[['country', 'predicted_score']]
-        for i, (_, row) in enumerate(top5.iterrows(), 1):
-            print(f"{i}. {row['country']:<30} {row['predicted_score']:.4f}")
-        
-        # Bottom 5 países
-        print("\n--- BOTTOM 5 PAÍSES (Happiness Score Predicho) ---")
-        bottom5 = self.df_predictions.nsmallest(5, 'predicted_score')[['country', 'predicted_score']]
-        for i, (_, row) in enumerate(bottom5.iterrows(), 1):
-            print(f"{i}. {row['country']:<30} {row['predicted_score']:.4f}")
-        
-        print("\n" + "="*80 + "\n")
-    
-    def ejecutar(self):
-        """Ejecuta el proceso completo de generación de KPIs"""
-        print("\nIniciando generación de KPIs...")
-        print("="*80)
-        
-        # 1. Cargar modelo
-        if not self.cargar_modelo():
-            return False
-        
-        # 2. Cargar datos y generar predicciones
-        if not self.cargar_datos():
-            return False
-        
-        # 3. Calcular métricas
-        if not self.calcular_metricas():
-            return False
-        
-        # 4. Generar visualizaciones
-        print("\nGenerando visualizaciones...")
-        self.generar_tarjetas_kpis()
-        self.generar_dashboard_consolidado()
-        
-        # 5. Generar reporte
-        self.generar_reporte_consola()
-        
-        print("\n✓ KPIs generados exitosamente!")
-        print("="*80)
-        return True
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+            
+        logger.info(f"✅ Dashboard HTML generated successfully at {file_path}")
+        return file_path
 
-
-def main():
-    """Función principal"""
-    # Crear generador y ejecutar (ajustando rutas relativas desde kpis/)
-    generador = GeneradorKPIs(
-        modelo_path='../model_regresion/modelo_regresion_lineal.pkl',
-        csv_folder='../csv'
-    )
-    generador.ejecutar()
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    # Usage example
+    kpi_generator = KPIGenerator()
+    if kpi_generator.load_data_from_mysql():
+        kpi_generator.calculate_all_metrics()
+        kpi_generator.generate_html_dashboard()

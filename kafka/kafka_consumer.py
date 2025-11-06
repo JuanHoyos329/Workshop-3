@@ -173,13 +173,13 @@ class HappinessKafkaConsumer:
             prediction_error FLOAT,
             
             -- Metadata
-            data_split VARCHAR(20),
+            type_model VARCHAR(20),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             
             INDEX idx_country (country),
             INDEX idx_region (region),
             INDEX idx_year (year),
-            INDEX idx_data_split (data_split),
+            INDEX idx_type_model (type_model),
             INDEX idx_created_at (created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """
@@ -302,21 +302,21 @@ class HappinessKafkaConsumer:
     
     def load_to_mysql(self, record: Dict[str, Any], 
                       predicted_score: float,
-                      data_split: str) -> None:
+                      type_model: str) -> None:
         """
         [ETL - LOAD] Persiste el registro, predicción y métricas en MySQL.
         
         Args:
             record: Registro original desde Kafka
             predicted_score: Score predicho por el modelo
-            data_split: Tipo de conjunto de datos ('train' o 'test')
+            type_model: Tipo de conjunto de datos ('train' o 'test')
         """
         insert_query = """
         INSERT INTO predictions (
             country, region, year,
             gdp_per_capita, social_support, healthy_life_expectancy,
             freedom_to_make_life_choices, generosity, perceptions_of_corruption,
-            actual_score, predicted_score, prediction_error, data_split
+            actual_score, predicted_score, prediction_error, type_model
         ) VALUES (
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
@@ -343,7 +343,7 @@ class HappinessKafkaConsumer:
             actual_score,
             predicted_score,
             prediction_error,
-            data_split
+            type_model
         )
         
         try:
@@ -385,7 +385,7 @@ class HappinessKafkaConsumer:
                 gdp_per_capita, social_support, healthy_life_expectancy,
                 freedom_to_make_life_choices, generosity, perceptions_of_corruption,
                 actual_score, predicted_score, prediction_error,
-                data_split, created_at
+                type_model, created_at
             FROM predictions
             ORDER BY created_at
             """
@@ -400,9 +400,9 @@ class HappinessKafkaConsumer:
             logger.info(f"   📁 Archivo: {csv_path}")
             logger.info(f"   📊 Registros: {len(df)}")
             
-            # Mostrar estadísticas por data_split
-            if 'data_split' in df.columns:
-                split_counts = df['data_split'].value_counts()
+            # Mostrar estadísticas por type_model
+            if 'type_model' in df.columns:
+                split_counts = df['type_model'].value_counts()
                 logger.info(f"   📈 Distribución:")
                 for split, count in split_counts.items():
                     logger.info(f"      - {split}: {count} registros")
@@ -443,17 +443,17 @@ class HappinessKafkaConsumer:
                 predicted_score
             )
             
-            # Obtener data_split del registro (viene del producer)
-            data_split = record.get('data_split', 'unknown')
+            # Obtener type_model del registro (viene del producer)
+            type_model = record.get('type_model', 'unknown')
             
             # ==================== LOAD ====================
-            self.load_to_mysql(record, predicted_score, data_split)
+            self.load_to_mysql(record, predicted_score, type_model)
             
             # Log de resultado
             logger.info(
                 f"✅ [ETL] Record #{record['record_id']}: "
                 f"{record['country']} ({record['year']}) | "
-                f"Split: {data_split} | "
+                f"Type: {type_model} | "
                 f"Real: {record['actual_score']:.2f} | "
                 f"Predicho: {predicted_score:.2f} | "
                 f"Error: {metrics['prediction_error']:.2f}"
@@ -489,11 +489,11 @@ class HappinessKafkaConsumer:
                 # Actualizar estadísticas
                 messages_processed += 1
                 record = message.value
-                data_split = record.get('data_split', 'unknown')
+                type_model = record.get('type_model', 'unknown')
                 
-                if data_split == 'train':
+                if type_model == 'train':
                     train_processed += 1
-                elif data_split == 'test':
+                elif type_model == 'test':
                     test_processed += 1
                 
                 # Log cada 10 mensajes
