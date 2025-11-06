@@ -203,24 +203,13 @@ LIMIT 10;
 
 ## Resultados del Modelo
 
-### Modelo: Regresión Lineal Múltiple con One-Hot Encoding
+### Modelo: Regresión Lineal Múltiple
 
 **Características del modelo:**
 - 6 features numéricas
 - 1 variable categórica (Country) → ~157 variables dummy
 - Total: 163 features después del One-Hot Encoding
 - División: 70% train / 30% test con estratificación por país
-
-### Métricas de Evaluación
-
-| Métrica | Train | Test | Interpretación |
-|---------|-------|------|----------------|
-| R² | 0.9847 | 0.9749 | Excelente ajuste del modelo |
-| MAE | 0.0969 | 0.1229 | Error absoluto promedio bajo |
-| RMSE | 0.1381 | 0.1767 | Raíz del error cuadrático medio |
-| MAPE | 1.88% | 2.37% | Error porcentual muy bajo |
-
-**Nota:** La inclusión de la variable Country mejoró significativamente el R² de 0.75 a 0.98.
 
 ### Features Utilizadas
 
@@ -233,15 +222,15 @@ LIMIT 10;
 6. Perceptions of corruption - Percepción de corrupción
 
 **Categórica (1):**
-- Country - País (One-Hot Encoding → 157 dummies)
+- Country - País 
 
 ---
 
 ## Decisiones Técnicas Clave
 
-### 1. ¿Por qué Regresión Lineal con One-Hot Encoding?
+### 1. ¿Por qué Regresión Lineal?
 - Simplicidad e interpretabilidad mantenida
-- R² de 98% con la inclusión de Country
+- R² de mayor a 90% con la inclusión de Country
 - Entrenamiento rápido (ideal para streaming)
 - Captura efectos específicos por país
 - El preprocessor (ColumnTransformer) maneja automáticamente la transformación
@@ -303,7 +292,7 @@ mysql_config = {
     'port': 3306,
     'database': 'happiness_db',
     'user': 'root',
-    'password': 'tu_password'  # Cambiar aquí
+    'password': 'tu_password'  # Cambiar
 }
 ```
 
@@ -318,11 +307,6 @@ python model_utils.py
 
 Esto genera el archivo `modelo_regresion_lineal.pkl` necesario para las predicciones.
 
-### Error: Estratificación (ValueError: least populated class)
-
-Este error ocurría en versiones anteriores cuando había países con un solo registro. La versión actual maneja esto automáticamente separando países con múltiples registros (estratificados) de países con un solo registro (división aleatoria).
-
----
 
 ## Dashboard de KPIs
 
@@ -381,9 +365,6 @@ El sistema incluye un dashboard interactivo HTML con visualizaciones consolidada
 Juan A. Hoyos  
 Workshop 3 - ETL con Kafka y Machine Learning
 
-## Licencia
-
-Este proyecto es parte de un workshop educativo.
 
 ## Referencias
 
