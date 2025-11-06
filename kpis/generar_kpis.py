@@ -45,7 +45,7 @@ class KPIGenerator:
             
             query = """
             SELECT 
-                country, region, year,
+                country, year,
                 gdp_per_capita, social_support, healthy_life_expectancy,
                 freedom_to_make_life_choices, generosity, perceptions_of_corruption,
                 actual_score, predicted_score, prediction_error,
@@ -313,66 +313,69 @@ class KPIGenerator:
         fig.update_layout(
             xaxis_title='Year',
             yaxis_title='Average Happiness Score',
+            yaxis=dict(
+                range=[5, 6],  # Rango fijo de 5 a 6
+                dtick=0.2      # Intervalos de 0.2 (5.0, 5.2, 5.4, 5.6, 5.8, 6.0)
+            ),
             height=500,
             legend=dict(x=0.02, y=0.98),
             showlegend=True
         )
         return fig
     
-    def create_happiness_by_region(self):
-        """Happiest and least happy regions - 3 bars: Actual, Train, Test"""
+    def create_happiness_by_year_comparison(self):
+        """Comparison of happiness score by year - 3 bars: Actual, Train, Test"""
         # Actual Data
-        df_actual = self.df_predictions.groupby('region').agg({
+        df_actual = self.df_predictions.groupby('year').agg({
             'actual_score': 'mean'
         }).reset_index()
         
         # Train
-        df_train = self.df_predictions[self.df_predictions['type_model'] == 'train'].groupby('region').agg({
+        df_train = self.df_predictions[self.df_predictions['type_model'] == 'train'].groupby('year').agg({
             'predicted_score': 'mean'
         }).reset_index()
         
         # Test
-        df_test = self.df_predictions[self.df_predictions['type_model'] == 'test'].groupby('region').agg({
+        df_test = self.df_predictions[self.df_predictions['type_model'] == 'test'].groupby('year').agg({
             'predicted_score': 'mean'
         }).reset_index()
         
         # Merge all into one DataFrame
-        df_region = df_actual.merge(df_train, on='region', how='left', suffixes=('', '_train'))
-        df_region = df_region.merge(df_test, on='region', how='left', suffixes=('', '_test'))
-        df_region = df_region.sort_values('actual_score', ascending=False)
+        df_years = df_actual.merge(df_train, on='year', how='left', suffixes=('', '_train'))
+        df_years = df_years.merge(df_test, on='year', how='left', suffixes=('', '_test'))
+        df_years = df_years.sort_values('year')
         
         fig = go.Figure()
         
         # Actual Bar
         fig.add_trace(go.Bar(
-            x=df_region['region'], 
-            y=df_region['actual_score'],
+            x=df_years['year'], 
+            y=df_years['actual_score'],
             name='Actual', 
             marker=dict(color='#6A994E')
         ))
         
         # Train Bar
         fig.add_trace(go.Bar(
-            x=df_region['region'], 
-            y=df_region['predicted_score'],
+            x=df_years['year'], 
+            y=df_years['predicted_score'],
             name='Train Prediction', 
             marker=dict(color='#2E86AB')
         ))
         
         # Test Bar
         fig.add_trace(go.Bar(
-            x=df_region['region'], 
-            y=df_region['predicted_score_test'],
+            x=df_years['year'], 
+            y=df_years['predicted_score_test'],
             name='Test Prediction', 
             marker=dict(color='#F18F01')
         ))
         
         fig.update_layout(
-            xaxis_title='Region',
+            xaxis_title='Year',
             yaxis_title='Average Happiness Score',
             barmode='group', 
             height=500,
-            xaxis_tickangle=-45,
             showlegend=True
         )
         return fig
@@ -398,20 +401,238 @@ class KPIGenerator:
                           showlegend=True)
         return fig
     
-    def create_happiness_map(self):
-        """Geographical map of happiness score by country"""
-        # Group by country and get average
-        df_map = self.df_predictions.groupby('country').agg({
-            'actual_score': 'mean',
-            'predicted_score': 'mean',
-            'region': 'first'
+    def create_feature_importance(self):
+        """Feature Importance - Shows correlation between features and actual happiness score (TEST data only)"""
+        # Filter only TEST data
+        df_test = self.df_predictions[self.df_predictions['type_model'] == 'test']
+        
+        # Calculate correlation between each feature and actual score
+        features = ['gdp_per_capita', 'social_support', 'healthy_life_expectancy',
+                   'freedom_to_make_life_choices', 'generosity', 'perceptions_of_corruption']
+        
+        feature_names = ['GDP per Capita', 'Social Support', 'Healthy Life Expectancy',
+                        'Freedom to Make Choices', 'Generosity', 'Perceptions of Corruption']
+        
+        correlations = []
+        for feature in features:
+            corr = df_test[feature].corr(df_test['actual_score'])
+            correlations.append(abs(corr))  # Usar valor absoluto
+        
+        # Sort by absolute value (descendente)
+        sorted_indices = sorted(range(len(correlations)), key=lambda i: correlations[i], reverse=True)
+        sorted_features = [feature_names[i] for i in sorted_indices]
+        sorted_corr = [correlations[i] for i in sorted_indices]
+        
+        # Color verde para todas (correlaciones positivas en valor absoluto)
+        colors = '#6A994E'
+        
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            y=sorted_features,
+            x=sorted_corr,
+            orientation='h',
+            marker=dict(color=colors),
+            text=[f'{c:.3f}' for c in sorted_corr],
+            textposition='outside',
+            hovertemplate='<b>%{y}</b><br>Correlation: %{x:.4f}<extra></extra>'
+        ))
+        
+        fig.update_layout(
+            xaxis_title='Correlation with Happiness Score',
+            yaxis_title='Features',
+            height=500,
+            showlegend=False,
+            xaxis=dict(range=[0, 1])  # Rango de 0 a 1 (solo positivos)
+        )
+        
+        return fig
+    
+    def create_error_analysis_by_country(self):
+        """Error Analysis by Country - Best and Worst Predictions (TEST data only)"""
+        # Filter only TEST data
+        df_test = self.df_predictions[self.df_predictions['type_model'] == 'test']
+        
+        # Calculate average error per country
+        df_country_error = df_test.groupby('country').agg({
+            'prediction_error': 'mean',
+            'actual_score': 'mean'
         }).reset_index()
+        
+        # Sort by error
+        df_country_error = df_country_error.sort_values('prediction_error')
+        
+        # Top 10 best (lowest error) - pero excluir errores extremadamente pequeños (< 0.001)
+        # Estos son probablemente datos atípicos
+        df_country_error_filtered = df_country_error[df_country_error['prediction_error'] > 0.001]
+        best_10 = df_country_error_filtered.head(10)
+        
+        # Top 10 worst (highest error)
+        worst_10 = df_country_error.tail(10).sort_values('prediction_error', ascending=False)
+        
+        # Create subplots
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=('Best Predictions (Lowest Error)', 'Worst Predictions (Highest Error)'),
+            horizontal_spacing=0.20
+        )
+        
+        # Best predictions (green)
+        fig.add_trace(
+            go.Bar(
+                y=best_10['country'],
+                x=best_10['prediction_error'],
+                orientation='h',
+                name='Best',
+                marker=dict(color='#6A994E'),
+                text=[f'{e:.4f}' for e in best_10['prediction_error']],
+                textposition='outside',
+                hovertemplate='<b>%{y}</b><br>Error: %{x:.4f}<extra></extra>'
+            ),
+            row=1, col=1
+        )
+        
+        # Worst predictions (red)
+        fig.add_trace(
+            go.Bar(
+                y=worst_10['country'],
+                x=worst_10['prediction_error'],
+                orientation='h',
+                name='Worst',
+                marker=dict(color='#C1121F'),
+                text=[f'{e:.4f}' for e in worst_10['prediction_error']],
+                textposition='outside',
+                hovertemplate='<b>%{y}</b><br>Error: %{x:.4f}<extra></extra>'
+            ),
+            row=1, col=2
+        )
+        
+        fig.update_xaxes(title_text='Average Prediction Error', row=1, col=1)
+        fig.update_xaxes(title_text='Average Prediction Error', row=1, col=2)
+        
+        fig.update_layout(
+            height=700,
+            showlegend=False
+        )
+        
+        return fig
+    
+    def create_year_over_year_change(self):
+        """Year-over-Year Change Analysis - Countries with biggest happiness changes (TEST data only)"""
+        # Filter only TEST data
+        df_test = self.df_predictions[self.df_predictions['type_model'] == 'test']
+        
+        # Get data by country and year
+        df_by_year = df_test.groupby(['country', 'year']).agg({
+            'actual_score': 'mean'
+        }).reset_index()
+        
+        # Calculate year-over-year change
+        df_by_year = df_by_year.sort_values(['country', 'year'])
+        df_by_year['yoy_change'] = df_by_year.groupby('country')['actual_score'].diff()
+        
+        # Get total change (last year - first year)
+        df_total_change = df_by_year.groupby('country').agg({
+            'actual_score': ['first', 'last']
+        }).reset_index()
+        df_total_change.columns = ['country', 'first_score', 'last_score']
+        df_total_change['total_change'] = df_total_change['last_score'] - df_total_change['first_score']
+        
+        # Remove countries with no change data
+        df_total_change = df_total_change.dropna(subset=['total_change'])
+        
+        # Sort by absolute change and get top gainers and losers
+        df_total_change = df_total_change.sort_values('total_change')
+        
+        # Top 10 losers (negative change) - ordenar de mayor a menor pérdida (descendente)
+        top_losers = df_total_change.head(10).sort_values('total_change', ascending=True)
+        
+        # Top 10 gainers (positive change) - ordenar de menor a mayor ganancia (ascendente)
+        top_gainers = df_total_change.tail(10).sort_values('total_change', ascending=True)
+        
+        # Create subplots con ancho mayor
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=('Top Gainers (2015-2019)', 'Top Losers (2015-2019)'),
+            horizontal_spacing=0.12,
+            column_widths=[0.44, 0.44]  # Dar más ancho a cada columna
+        )
+        
+        # Top gainers (green)
+        fig.add_trace(
+            go.Bar(
+                y=top_gainers['country'],
+                x=top_gainers['total_change'],
+                orientation='h',
+                name='Gainers',
+                marker=dict(color='#6A994E'),
+                text=[f'+{c:.3f}' for c in top_gainers['total_change']],
+                textposition='outside',
+                hovertemplate='<b>%{y}</b><br>Change: %{x:.4f}<extra></extra>'
+            ),
+            row=1, col=1
+        )
+        
+        # Top losers (red)
+        fig.add_trace(
+            go.Bar(
+                y=top_losers['country'],
+                x=top_losers['total_change'],
+                orientation='h',
+                name='Losers',
+                marker=dict(color='#C1121F'),
+                text=[f'{c:.3f}' for c in top_losers['total_change']],
+                textposition='outside',
+                hovertemplate='<b>%{y}</b><br>Change: %{x:.4f}<extra></extra>'
+            ),
+            row=1, col=2
+        )
+        
+        fig.update_xaxes(title_text='Happiness Score Change', row=1, col=1)
+        fig.update_xaxes(title_text='Happiness Score Change', row=1, col=2)
+        
+        fig.update_layout(
+            height=700,
+            showlegend=False
+        )
+        
+        return fig
+    
+    def create_happiness_map(self, map_type='actual'):
+        """
+        Geographical map of happiness score by country
+        
+        Args:
+            map_type: 'actual', 'train', or 'test' to show different data
+        """
+        if map_type == 'train':
+            # Solo datos de train
+            df_filtered = self.df_predictions[self.df_predictions['type_model'] == 'train']
+            df_map = df_filtered.groupby('country').agg({
+                'predicted_score': 'mean'
+            }).reset_index()
+            z_values = df_map['predicted_score']
+            title_suffix = ' (Train Predictions)'
+        elif map_type == 'test':
+            # Solo datos de test
+            df_filtered = self.df_predictions[self.df_predictions['type_model'] == 'test']
+            df_map = df_filtered.groupby('country').agg({
+                'predicted_score': 'mean'
+            }).reset_index()
+            z_values = df_map['predicted_score']
+            title_suffix = ' (Test Predictions)'
+        else:  # 'actual'
+            # Datos reales (todos)
+            df_map = self.df_predictions.groupby('country').agg({
+                'actual_score': 'mean'
+            }).reset_index()
+            z_values = df_map['actual_score']
+            title_suffix = ' (Actual)'
         
         # Create map with Choropleth
         fig = go.Figure(data=go.Choropleth(
             locations=df_map['country'],
             locationmode='country names',
-            z=df_map['actual_score'],
+            z=z_values,
             text=df_map['country'],
             colorscale='RdYlGn',  # Red-Yellow-Green
             autocolorscale=False,
@@ -443,7 +664,6 @@ class KPIGenerator:
                         <th style="padding: 12px; border: 1px solid #ddd;">Metric</th>
                         <th style="padding: 12px; border: 1px solid #ddd;">Train</th>
                         <th style="padding: 12px; border: 1px solid #ddd;">Test</th>
-                        <th style="padding: 12px; border: 1px solid #ddd;">Total</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -451,31 +671,26 @@ class KPIGenerator:
                         <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">R² Score</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_train.get('r2', 0):.4f}</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_test.get('r2', 0):.4f}</td>
-                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_total.get('r2', 0):.4f}</td>
                     </tr>
                     <tr>
                         <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">MAE</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_train.get('mae', 0):.4f}</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_test.get('mae', 0):.4f}</td>
-                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_total.get('mae', 0):.4f}</td>
                     </tr>
                     <tr style="background-color: #f9f9f9;">
                         <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">RMSE</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_train.get('rmse', 0):.4f}</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_test.get('rmse', 0):.4f}</td>
-                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_total.get('rmse', 0):.4f}</td>
                     </tr>
                     <tr>
                         <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">MAPE (%)</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_train.get('mape', 0):.2f}%</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_test.get('mape', 0):.2f}%</td>
-                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_total.get('mape', 0):.2f}%</td>
                     </tr>
                     <tr style="background-color: #f9f9f9;">
                         <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Records</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_train.get('total_records', 0)}</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_test.get('total_records', 0)}</td>
-                        <td style="padding: 10px; border: 1px solid #ddd;">{self.metrics_total.get('total_records', 0)}</td>
                     </tr>
                 </tbody>
             </table>
@@ -519,26 +734,7 @@ class KPIGenerator:
         fig.update_layout(title=f'Top 10 Happiest Countries - Year {year}', xaxis_title='Happiness Score', barmode='group', height=500)
         return fig
     
-    def create_visualizations_by_region(self, region):
-        """Creates visualizations filtered by region"""
-        df_region = self.df_predictions[self.df_predictions['region'] == region]
-        
-        # Top countries in the region
-        df_actual = df_region.groupby('country').agg({'actual_score': 'mean'}).reset_index()
-        df_train = df_region[df_region['type_model'] == 'train'].groupby('country').agg({'predicted_score': 'mean'}).reset_index()
-        df_test = df_region[df_region['type_model'] == 'test'].groupby('country').agg({'predicted_score': 'mean'}).reset_index()
-        
-        df_avg = df_actual.merge(df_train, on='country', how='left', suffixes=('', '_train'))
-        df_avg = df_avg.merge(df_test, on='country', how='left', suffixes=('', '_test'))
-        df_avg = df_avg.sort_values('actual_score', ascending=False).head(10).sort_values('actual_score')
-        
-        fig = go.Figure()
-        fig.add_trace(go.Bar(y=df_avg['country'], x=df_avg['actual_score'], name='Actual', orientation='h', marker=dict(color='#6A994E')))
-        fig.add_trace(go.Bar(y=df_avg['country'], x=df_avg['predicted_score'], name='Train Prediction', orientation='h', marker=dict(color='#2E86AB')))
-        fig.add_trace(go.Bar(y=df_avg['country'], x=df_avg['predicted_score_test'], name='Test Prediction', orientation='h', marker=dict(color='#F18F01')))
-        
-        fig.update_layout(title=f'Top Countries - {region}', xaxis_title='Happiness Score', barmode='group', height=500)
-        return fig
+
 
     def generate_html_dashboard(self):
         """Generates the complete HTML dashboard"""
@@ -552,11 +748,21 @@ class KPIGenerator:
         
         # Create main visualizations
         fig_kpis = self.create_kpi_cards()
-        fig_mapa = self.create_happiness_map()
+        
+        # Create 3 versions of the map (Actual, Train, Test)
+        fig_mapa_actual = self.create_happiness_map('actual')
+        fig_mapa_train = self.create_happiness_map('train')
+        fig_mapa_test = self.create_happiness_map('test')
+        
         fig_top10 = self.create_top10_countries()
         fig_temporal = self.create_time_series_evolution()
-        fig_regiones = self.create_happiness_by_region()
         fig_errores = self.create_error_distribution()
+        
+        # New KPIs
+        fig_feature_importance = self.create_feature_importance()
+        fig_error_by_country = self.create_error_analysis_by_country()
+        fig_yoy_change = self.create_year_over_year_change()
+        
         tabla_metricas = self.create_metrics_table()
         
         # Create filtered versions of predictions vs actuals (using fixed range)
@@ -571,19 +777,22 @@ class KPIGenerator:
         for year in years:
             figs_by_year[year] = self.create_visualizations_by_year(year)
         
-        # Create filtered versions by region
-        regions = sorted(self.df_predictions['region'].unique())
-        figs_by_region = {}
-        for region in regions:
-            figs_by_region[region] = self.create_visualizations_by_region(region)
-        
         # Convert figures to HTML using to_html()
         kpis_html = fig_kpis.to_html(full_html=False, include_plotlyjs='cdn')
-        mapa_html = fig_mapa.to_html(full_html=False, include_plotlyjs=False)
+        
+        # Convert the 3 map versions
+        mapa_actual_html = fig_mapa_actual.to_html(full_html=False, include_plotlyjs=False)
+        mapa_train_html = fig_mapa_train.to_html(full_html=False, include_plotlyjs=False)
+        mapa_test_html = fig_mapa_test.to_html(full_html=False, include_plotlyjs=False)
+        
         top10_html = fig_top10.to_html(full_html=False, include_plotlyjs=False)
         temporal_html = fig_temporal.to_html(full_html=False, include_plotlyjs=False)
-        regiones_html = fig_regiones.to_html(full_html=False, include_plotlyjs=False)
         errores_html = fig_errores.to_html(full_html=False, include_plotlyjs=False)
+        
+        # New KPIs HTML
+        feature_importance_html = fig_feature_importance.to_html(full_html=False, include_plotlyjs=False)
+        error_by_country_html = fig_error_by_country.to_html(full_html=False, include_plotlyjs=False)
+        yoy_change_html = fig_yoy_change.to_html(full_html=False, include_plotlyjs=False)
         
         # Filtered versions
         pred_all_html = fig_pred_all.to_html(full_html=False, include_plotlyjs=False)
@@ -594,11 +803,6 @@ class KPIGenerator:
         top10_by_year_html = {}
         for year in years:
             top10_by_year_html[year] = figs_by_year[year].to_html(full_html=False, include_plotlyjs=False)
-        
-        # By region
-        top10_by_region_html = {}
-        for region in regions:
-            top10_by_region_html[region] = figs_by_region[region].to_html(full_html=False, include_plotlyjs=False)
         
         # Generate HTML
         html_content = f"""
@@ -723,7 +927,17 @@ class KPIGenerator:
         
         <div class="chart-container">
             <h2 class="section-title">World Happiness Map</h2>
-            """ + mapa_html + """
+            
+            <div style="margin-bottom: 20px;">
+                <label class="filter-label">Data Type:</label>
+                <button onclick="filterMap('actual')" id="btnMapActual" class="btn active">Actual</button>
+                <button onclick="filterMap('train')" id="btnMapTrain" class="btn">Train</button>
+                <button onclick="filterMap('test')" id="btnMapTest" class="btn">Test</button>
+            </div>
+            
+            <div id="mapActual">""" + mapa_actual_html + """</div>
+            <div id="mapTrain" style="display: none;">""" + mapa_train_html + """</div>
+            <div id="mapTest" style="display: none;">""" + mapa_test_html + """</div>
         </div>
         
         <div class="chart-container">
@@ -752,13 +966,23 @@ class KPIGenerator:
         </div>
         
         <div class="chart-container">
-            <h2 class="section-title">Happiness Score by Region</h2>
-""" + regiones_html + """
+            <h2 class="section-title">Prediction Error Distribution</h2>
+""" + errores_html + """
         </div>
         
         <div class="chart-container">
-            <h2 class="section-title">Prediction Error Distribution</h2>
-""" + errores_html + """
+            <h2 class="section-title">Feature Importance Analysis</h2>
+""" + feature_importance_html + """
+        </div>
+        
+        <div class="chart-container">
+            <h2 class="section-title">Error Analysis by Country</h2>
+""" + error_by_country_html + """
+        </div>
+        
+        <div class="chart-container">
+            <h2 class="section-title">Year-over-Year Happiness Change (2015-2019)</h2>
+""" + yoy_change_html + """
         </div>
     </div>
     
@@ -778,6 +1002,23 @@ class KPIGenerator:
             // Show selected and activate button
             document.getElementById('pred' + type.charAt(0).toUpperCase() + type.slice(1)).style.display = 'block';
             document.getElementById('btnPred' + type.charAt(0).toUpperCase() + type.slice(1)).classList.add('active');
+        }}
+        
+        // Filter for Map
+        function filterMap(type) {{
+            // Hide all
+            document.getElementById('mapActual').style.display = 'none';
+            document.getElementById('mapTrain').style.display = 'none';
+            document.getElementById('mapTest').style.display = 'none';
+
+            // Deactivate all buttons
+            document.getElementById('btnMapActual').classList.remove('active');
+            document.getElementById('btnMapTrain').classList.remove('active');
+            document.getElementById('btnMapTest').classList.remove('active');
+
+            // Show selected and activate button
+            document.getElementById('map' + type.charAt(0).toUpperCase() + type.slice(1)).style.display = 'block';
+            document.getElementById('btnMap' + type.charAt(0).toUpperCase() + type.slice(1)).classList.add('active');
         }}
     </script>
 </body>

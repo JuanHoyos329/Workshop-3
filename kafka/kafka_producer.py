@@ -86,10 +86,10 @@ class HappinessKafkaProducer:
             raise FileNotFoundError(f"❌ No se encontraron archivos CSV en {csv_dir}")
         
         # Mapeo de columnas por año (mismo que model_utils.py)
+        # NOTA: Region se excluye intencionalmente ya que no está en todos los años
         column_mappings = {
             2015: {
                 'Country': 'Country',
-                'Region': 'Region',
                 'Happiness Score': 'Score',
                 'Economy (GDP per Capita)': 'GDP per capita',
                 'Family': 'Social support',
@@ -100,7 +100,6 @@ class HappinessKafkaProducer:
             },
             2016: {
                 'Country': 'Country',
-                'Region': 'Region',
                 'Happiness Score': 'Score',
                 'Economy (GDP per Capita)': 'GDP per capita',
                 'Family': 'Social support',
@@ -111,7 +110,6 @@ class HappinessKafkaProducer:
             },
             2017: {
                 'Country': 'Country',
-                'Region': 'Region',
                 'Happiness.Score': 'Score',
                 'Economy..GDP.per.Capita.': 'GDP per capita',
                 'Family': 'Social support',
@@ -122,7 +120,6 @@ class HappinessKafkaProducer:
             },
             2018: {
                 'Country or region': 'Country',
-                'Region': 'Region',
                 'Score': 'Score',
                 'GDP per capita': 'GDP per capita',
                 'Social support': 'Social support',
@@ -133,7 +130,6 @@ class HappinessKafkaProducer:
             },
             2019: {
                 'Country or region': 'Country',
-                'Region': 'Region',
                 'Score': 'Score',
                 'GDP per capita': 'GDP per capita',
                 'Social support': 'Social support',
@@ -149,26 +145,8 @@ class HappinessKafkaProducer:
             year = int(os.path.basename(file).split('.')[0])
             df = pd.read_csv(file)
             
-            # Para 2017, 2018, 2019: agregar columna Region si no existe
-            # Leer Region de 2015 como referencia
-            if 'Region' not in df.columns and year >= 2017:
-                # Cargar mapping de región desde 2015
-                ref_file = os.path.join(csv_dir, '2015.csv')
-                if os.path.exists(ref_file):
-                    df_ref = pd.read_csv(ref_file)[['Country', 'Region']]
-                    # Merge para obtener región
-                    df = df.merge(df_ref, left_on='Country' if 'Country' in df.columns else 'Country or region', 
-                                 right_on='Country', how='left', suffixes=('', '_ref'))
-                    # Si hay duplicado de Country, eliminar
-                    if 'Country_ref' in df.columns:
-                        df = df.drop(columns=['Country_ref'])
-                    # Rellenar regiones faltantes con 'Other'
-                    if 'Region' in df.columns:
-                        df['Region'] = df['Region'].fillna('Other')
-                    else:
-                        df['Region'] = 'Other'
-            
             # Aplicar mapeo de columnas específico del año
+            # NOTA: No incluimos Region porque solo existe en 2015-2016 y no se usa en el modelo
             if year in column_mappings:
                 mapping = column_mappings[year]
                 cols_to_select = {old: new for old, new in mapping.items() if old in df.columns}
@@ -190,6 +168,7 @@ class HappinessKafkaProducer:
     def transform_clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         [ETL - TRANSFORM] Limpia datos eliminando valores nulos en columnas críticas.
+        También normaliza nombres de países (ej: Somaliland region -> Somalia).
         
         Args:
             df: DataFrame original
@@ -204,6 +183,16 @@ class HappinessKafkaProducer:
         ]
         
         initial_count = len(df)
+        
+        # Normalizar nombres de países (unificar Somaliland region -> Somalia)
+        # Somaliland es una región autónoma de facto de Somalia
+        if 'Country' in df.columns:
+            somaliland_count = df['Country'].str.contains('Somaliland', case=False, na=False).sum()
+            if somaliland_count > 0:
+                df['Country'] = df['Country'].str.replace('Somaliland region', 'Somalia', case=False, regex=False)
+                df['Country'] = df['Country'].str.replace('Somaliland Region', 'Somalia', case=False, regex=False)
+                logger.info(f"🔄 [TRANSFORM] Unificados {somaliland_count} registros: Somaliland region -> Somalia")
+        
         df_clean = df.dropna(subset=feature_columns)
         removed_count = initial_count - len(df_clean)
         
@@ -260,8 +249,9 @@ class HappinessKafkaProducer:
         Returns:
             Diccionario con el registro formateado para Kafka
         """
-        # Características para el modelo (features)
+        # Características para el modelo (features numéricas + categórica Country)
         features = {
+            'Country': str(row.get('Country', 'Unknown')),  # ✅ AÑADIDO: Variable categórica
             'GDP_per_capita': float(row.get('GDP per capita', 0)),
             'Social_support': float(row.get('Social support', 0)),
             'Healthy_life_expectancy': float(row.get('Healthy life expectancy', 0)),
@@ -271,11 +261,11 @@ class HappinessKafkaProducer:
         }
         
         # Registro completo con metadata
+        # NOTA: Region se excluye porque no está disponible en todos los años (solo 2015-2016)
         record = {
             'record_id': index,
             'timestamp': time.time(),
             'country': str(row.get('Country', 'Unknown')),
-            'region': str(row.get('Region', 'Other')),
             'year': int(row.get('Year', 0)),
             'actual_score': float(row.get('Score', 0)),
             'type_model': type_model,

@@ -3,6 +3,7 @@ import pickle
 import time
 import os
 import numpy as np
+import pandas as pd
 from kafka import KafkaConsumer
 import mysql.connector
 from mysql.connector import Error
@@ -86,7 +87,7 @@ class HappinessKafkaConsumer:
     
     def _load_model(self, model_path: str) -> None:
         """
-        Carga el modelo ML desde un archivo .pkl.
+        Carga el modelo ML desde un archivo .pkl (contiene modelo + preprocessor).
         
         Args:
             model_path: Ruta al archivo del modelo
@@ -100,13 +101,23 @@ class HappinessKafkaConsumer:
                 logger.error(f"❌ El modelo cargado es None")
                 raise ValueError("Modelo cargado es None")
             
-            # Verificar que tiene el método predict
-            if not hasattr(self.model, 'predict'):
+            # Verificar que es un diccionario con 'modelo' y 'preprocessor'
+            if not isinstance(self.model, dict):
+                logger.error(f"❌ El modelo debe ser un diccionario con 'modelo' y 'preprocessor'")
+                raise ValueError("Modelo inválido: formato incorrecto")
+            
+            if 'modelo' not in self.model or 'preprocessor' not in self.model:
+                logger.error(f"❌ El modelo debe contener keys 'modelo' y 'preprocessor'")
+                raise ValueError("Modelo inválido: faltan componentes")
+            
+            # Verificar que el modelo tiene el método predict
+            if not hasattr(self.model['modelo'], 'predict'):
                 logger.error(f"❌ El modelo no tiene método 'predict'")
                 raise ValueError("Modelo inválido: no tiene método 'predict'")
             
             logger.info(f"✅ Modelo cargado exitosamente desde {model_path}")
-            logger.info(f"   Tipo de modelo: {type(self.model).__name__}")
+            logger.info(f"   Tipo de modelo: {type(self.model['modelo']).__name__}")
+            logger.info(f"   Preprocessor: {type(self.model['preprocessor']).__name__}")
             
         except FileNotFoundError:
             logger.error(f"❌ Archivo de modelo no encontrado: {model_path}")
@@ -156,7 +167,6 @@ class HappinessKafkaConsumer:
         CREATE TABLE IF NOT EXISTS predictions (
             record_id INT AUTO_INCREMENT PRIMARY KEY,
             country VARCHAR(100),
-            region VARCHAR(100),
             year INT,
             
             -- Características (Features)
@@ -177,7 +187,6 @@ class HappinessKafkaConsumer:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             
             INDEX idx_country (country),
-            INDEX idx_region (region),
             INDEX idx_year (year),
             INDEX idx_type_model (type_model),
             INDEX idx_created_at (created_at)
@@ -216,7 +225,7 @@ class HappinessKafkaConsumer:
     # TRANSFORM: Transformación y procesamiento de datos
     # =========================================================================
     
-    def transform_extract_features(self, record: Dict[str, Any]) -> np.ndarray:
+    def transform_extract_features(self, record: Dict[str, Any]) -> pd.DataFrame:
         """
         [ETL - TRANSFORM] Extrae y ordena las características para el modelo.
         
@@ -224,34 +233,36 @@ class HappinessKafkaConsumer:
             record: Registro del mensaje de Kafka
             
         Returns:
-            Array de numpy con las 6 características en el orden correcto
+            DataFrame con las 6 características numéricas + Country (para One-Hot Encoding)
         """
         features = record['features']
         
-        # Orden debe coincidir con el orden de entrenamiento del modelo
-        feature_vector = np.array([
-            features['GDP_per_capita'],
-            features['Social_support'],
-            features['Healthy_life_expectancy'],
-            features['Freedom_to_make_life_choices'],
-            features['Generosity'],
-            features['Perceptions_of_corruption']
-        ]).reshape(1, -1)
+        # Crear DataFrame con el orden correcto (6 numéricas + Country)
+        # IMPORTANTE: El preprocessor del modelo aplicará One-Hot Encoding a Country
+        feature_df = pd.DataFrame({
+            'GDP per capita': [features['GDP_per_capita']],
+            'Social support': [features['Social_support']],
+            'Healthy life expectancy': [features['Healthy_life_expectancy']],
+            'Freedom to make life choices': [features['Freedom_to_make_life_choices']],
+            'Generosity': [features['Generosity']],
+            'Perceptions of corruption': [features['Perceptions_of_corruption']],
+            'Country': [features['Country']]  # ✅ AÑADIDO: Variable categórica
+        })
         
-        return feature_vector
+        return feature_df
     
-    def transform_predict_score(self, features: np.ndarray) -> float:
+    def transform_predict_score(self, features: pd.DataFrame) -> float:
         """
         [ETL - TRANSFORM] Aplica el modelo ML para predecir el Happiness Score.
         
         Args:
-            features: Array de características (6 features)
+            features: DataFrame con características (6 numéricas + Country)
             
         Returns:
             Score predicho por el modelo
         """
         try:
-            # Verificar que el modelo existe
+            # Verificar que el modelo existe y tiene preprocessor
             if self.model is None:
                 if self.model_reload_attempts < 3:
                     self.model_reload_attempts += 1
@@ -267,14 +278,23 @@ class HappinessKafkaConsumer:
                     logger.error(f"❌ No se pudo recargar el modelo después de {self.model_reload_attempts} intentos")
                     return 0.0
             
+            # El modelo es un diccionario con 'modelo' y 'preprocessor'
+            modelo = self.model['modelo']
+            preprocessor = self.model['preprocessor']
+            
+            # Aplicar preprocessor (One-Hot Encoding a Country)
+            features_transformed = preprocessor.transform(features)
+            
             # Realizar predicción
-            prediction = self.model.predict(features)[0]
+            prediction = modelo.predict(features_transformed)[0]
             return float(prediction)
             
         except Exception as e:
             logger.error(f"❌ Error en predicción: {e}")
             logger.error(f"   Tipo de modelo: {type(self.model)}")
-            logger.error(f"   Features shape: {features.shape if features is not None else 'None'}")
+            logger.error(f"   Features type: {type(features)}")
+            if isinstance(features, pd.DataFrame):
+                logger.error(f"   Features columns: {features.columns.tolist()}")
             return 0.0
     
     def transform_calculate_metrics(self, actual_score: float, predicted_score: float) -> Dict[str, float]:
@@ -305,6 +325,7 @@ class HappinessKafkaConsumer:
                       type_model: str) -> None:
         """
         [ETL - LOAD] Persiste el registro, predicción y métricas en MySQL.
+        Normaliza nombres de países antes de insertar.
         
         Args:
             record: Registro original desde Kafka
@@ -313,12 +334,12 @@ class HappinessKafkaConsumer:
         """
         insert_query = """
         INSERT INTO predictions (
-            country, region, year,
+            country, year,
             gdp_per_capita, social_support, healthy_life_expectancy,
             freedom_to_make_life_choices, generosity, perceptions_of_corruption,
             actual_score, predicted_score, prediction_error, type_model
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         """
         
@@ -326,13 +347,14 @@ class HappinessKafkaConsumer:
         actual_score = record['actual_score']
         prediction_error = abs(actual_score - predicted_score)
         
-        # Obtener región del mensaje de Kafka
+        # Obtener país del mensaje de Kafka y normalizar
         country = record['country']
-        region = record.get('region', 'Other')
+        # Unificar Somaliland region -> Somalia
+        if 'Somaliland' in country:
+            country = 'Somalia'
         
         values = (
             country,
-            region,
             record['year'],
             features['GDP_per_capita'],
             features['Social_support'],

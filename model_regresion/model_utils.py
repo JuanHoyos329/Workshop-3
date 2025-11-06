@@ -4,6 +4,8 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -217,15 +219,15 @@ def run_etl_pipeline():
 
 def train_and_save_model(model_path: str = None):
     """
-    Entrena el modelo de Regresión Lineal ejecutando ETL desde CSV originales.
+    Entrena el modelo de Regresión Lineal con Country (One-Hot Encoding) ejecutando ETL desde CSV originales.
     
     Args:
-        model_path: Ruta donde guardar el modelo .pkl
+        model_path: Ruta donde guardar el modelo .pkl (incluye modelo + preprocessor)
         
     Returns:
-        Modelo entrenado
+        Tupla (modelo, preprocessor)
     """
-    logger.info("🚀 Entrenando modelo de Regresión Lineal con datos 2015-2019...")
+    logger.info("🚀 Entrenando modelo de Regresión Lineal con Country (One-Hot Encoding)...")
 
     # Ejecutar ETL desde archivos CSV originales
     df = run_etl_pipeline()
@@ -240,27 +242,52 @@ def train_and_save_model(model_path: str = None):
     
     logger.info(f"✅ Datos combinados: {df.shape[0]} registros totales")
     
-    # Características (6 features)
+    # Características numéricas (6 features)
     feature_columns = [
         'GDP per capita', 'Social support', 'Healthy life expectancy',
         'Freedom to make life choices', 'Generosity', 'Perceptions of corruption'
     ]
     
+    # Variable categórica
+    categorical_columns = ['Country']
+    
     # Limpiar datos nulos
-    df_clean = df.dropna(subset=feature_columns + ['Score'])
+    df_clean = df.dropna(subset=feature_columns + categorical_columns + ['Score'])
     logger.info(f"✅ Registros limpios: {df_clean.shape[0]} (eliminados: {len(df) - len(df_clean)})")
     
-    X = df_clean[feature_columns]
+    # Separar características numéricas y categóricas
+    X_numeric = df_clean[feature_columns]
+    X_categorical = df_clean[categorical_columns]
     y = df_clean['Score']
     
+    # Combinar características para el split
+    X_combined = pd.concat([X_numeric.reset_index(drop=True), X_categorical.reset_index(drop=True)], axis=1)
+    y_reset = y.reset_index(drop=True)
+    
     # Dividir datos 70-30 (igual que en el notebook)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.3, random_state=42
+    X_train_combined, X_test_combined, y_train, y_test = train_test_split(
+        X_combined, y_reset, test_size=0.3, random_state=42
     )
     
     logger.info(f"✅ División 70-30:")
-    logger.info(f"   Entrenamiento: {X_train.shape[0]} registros")
-    logger.info(f"   Prueba: {X_test.shape[0]} registros")
+    logger.info(f"   Entrenamiento: {X_train_combined.shape[0]} registros")
+    logger.info(f"   Prueba: {X_test_combined.shape[0]} registros")
+    
+    # Crear preprocessor con OneHotEncoder
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', 'passthrough', feature_columns),
+            ('cat', OneHotEncoder(drop='first', sparse_output=False, handle_unknown='ignore'), categorical_columns)
+        ])
+    
+    # Aplicar One-Hot Encoding
+    X_train = preprocessor.fit_transform(X_train_combined)
+    X_test = preprocessor.transform(X_test_combined)
+    
+    logger.info(f"✅ One-Hot Encoding aplicado:")
+    logger.info(f"   Features numéricas: {len(feature_columns)}")
+    logger.info(f"   Country dummy variables: {df_clean['Country'].nunique() - 1}")
+    logger.info(f"   Total features: {X_train.shape[1]}")
     
     # Entrenar modelo
     modelo = LinearRegression()
@@ -288,25 +315,30 @@ def train_and_save_model(model_path: str = None):
     if model_path is None:
         model_path = os.path.join(script_dir, 'modelo_regresion_lineal.pkl')
 
-    # Guardar modelo
+    # Guardar modelo y preprocessor en un solo archivo
     os.makedirs(script_dir, exist_ok=True)
-    with open(model_path, 'wb') as f:
-        pickle.dump(modelo, f)
-
-    logger.info(f"💾 Modelo guardado en: {model_path}")
+    model_package = {
+        'modelo': modelo,
+        'preprocessor': preprocessor
+    }
     
-    return modelo
+    with open(model_path, 'wb') as f:
+        pickle.dump(model_package, f)
+
+    logger.info(f"💾 Modelo y preprocessor guardados en: {model_path}")
+    
+    return modelo, preprocessor
 
 
 def load_model(model_path: str = None):
     """
-    Carga el modelo desde archivo .pkl
+    Carga el modelo y preprocessor desde un archivo .pkl
     
     Args:
-        model_path: Ruta al archivo del modelo
+        model_path: Ruta al archivo del modelo (contiene modelo + preprocessor)
         
     Returns:
-        Modelo cargado
+        Tupla (modelo, preprocessor) o (None, None) si no se encuentran
     """
     import os
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -315,13 +347,17 @@ def load_model(model_path: str = None):
 
     try:
         with open(model_path, 'rb') as f:
-            modelo = pickle.load(f)
-        logger.info(f"✅ Modelo cargado desde: {model_path}")
-        return modelo
-    except FileNotFoundError:
-        logger.error(f"❌ Modelo no encontrado: {model_path}")
+            model_package = pickle.load(f)
+        
+        modelo = model_package['modelo']
+        preprocessor = model_package['preprocessor']
+        
+        logger.info(f"✅ Modelo y preprocessor cargados desde: {model_path}")
+        return modelo, preprocessor
+    except FileNotFoundError as e:
+        logger.error(f"❌ Archivo no encontrado: {e}")
         logger.info("💡 Ejecuta train_and_save_model() primero")
-        return None
+        return None, None
 
 
 def test_model_prediction(model_path: str = None):
@@ -331,36 +367,95 @@ def test_model_prediction(model_path: str = None):
     Args:
         model_path: Ruta al modelo
     """
-    modelo = load_model(model_path)
+    modelo, preprocessor = load_model(model_path)
     
-    if modelo is None:
+    if modelo is None or preprocessor is None:
         return
     
     # Datos de ejemplo (Finlandia 2019)
-    ejemplo = np.array([[
-        1.340,  # GDP per capita
-        1.587,  # Social support
-        0.986,  # Healthy life expectancy
-        0.596,  # Freedom to make life choices
-        0.153,  # Generosity
-        0.393   # Perceptions of corruption
-    ]])
+    # Crear DataFrame con características numéricas + Country
+    ejemplo_df = pd.DataFrame({
+        'GDP per capita': [1.340],
+        'Social support': [1.587],
+        'Healthy life expectancy': [0.986],
+        'Freedom to make life choices': [0.596],
+        'Generosity': [0.153],
+        'Perceptions of corruption': [0.393],
+        'Country': ['Finland']
+    })
     
-    prediccion = modelo.predict(ejemplo)[0]
+    # Aplicar preprocessor (One-Hot Encoding)
+    ejemplo_procesado = preprocessor.transform(ejemplo_df)
     
+    # Realizar predicción
+    prediccion = modelo.predict(ejemplo_procesado)[0]
+    
+    logger.info(f"\n{'='*80}")
+    logger.info(f"PRUEBA DE PREDICCIÓN")
+    logger.info(f"{'='*80}")
+    logger.info(f"País: Finland")
     logger.info(f"Predicción: {prediccion:.4f}")
-    logger.info(f"Error: {abs(7.769 - prediccion):.4f}")
+    logger.info(f"Valor real (2019): 7.769")
+    logger.info(f"Error absoluto: {abs(7.769 - prediccion):.4f}")
+    logger.info(f"{'='*80}\n")
+
+
+def predict_happiness(country: str, gdp: float, social_support: float, 
+                      life_expectancy: float, freedom: float, 
+                      generosity: float, corruption: float,
+                      model_path: str = None):
+    """
+    Realiza una predicción de Happiness Score para un país con características dadas.
+    
+    Args:
+        country: Nombre del país
+        gdp: GDP per capita
+        social_support: Social support
+        life_expectancy: Healthy life expectancy
+        freedom: Freedom to make life choices
+        generosity: Generosity
+        corruption: Perceptions of corruption
+        model_path: Ruta al modelo
+        
+    Returns:
+        Predicción del Happiness Score
+    """
+    modelo, preprocessor = load_model(model_path)
+    
+    if modelo is None or preprocessor is None:
+        return None
+    
+    # Crear DataFrame con los datos de entrada
+    input_df = pd.DataFrame({
+        'GDP per capita': [gdp],
+        'Social support': [social_support],
+        'Healthy life expectancy': [life_expectancy],
+        'Freedom to make life choices': [freedom],
+        'Generosity': [generosity],
+        'Perceptions of corruption': [corruption],
+        'Country': [country]
+    })
+    
+    # Aplicar preprocessor
+    input_procesado = preprocessor.transform(input_df)
+    
+    # Realizar predicción
+    prediccion = modelo.predict(input_procesado)[0]
+    
+    logger.info(f"📊 Predicción para {country}: {prediccion:.4f}")
+    
+    return prediccion
 
 
 if __name__ == "__main__":
     print("="*80)
     print("🔧 UTILIDADES - World Happiness Report ML System")
     print("="*80)
-    print("Este script incluye su propio proceso ETL")
+    print("Este script incluye su propio proceso ETL + One-Hot Encoding (Country)")
     print("="*80)
     
     # 1. Entrenar y guardar modelo (con ETL automático si es necesario)
-    modelo = train_and_save_model()
+    modelo, preprocessor = train_and_save_model()
     
     # 2. Probar modelo
     test_model_prediction()

@@ -1,4 +1,4 @@
-# 🌍 World Happiness Report - Sistema de Streaming con Kafka y Machine Learning
+# World Happiness Report - Sistema de Streaming con Kafka y Machine Learning
 
 ![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)
 ![Kafka](https://img.shields.io/badge/Apache_Kafka-7.5.0-orange.svg)
@@ -6,100 +6,105 @@
 ![Docker](https://img.shields.io/badge/Docker-Latest-blue.svg)
 ![ML](https://img.shields.io/badge/ML-Scikit--Learn-yellow.svg)
 
-## 📋 Descripción del Proyecto
+## Descripción del Proyecto
 
-Sistema de **streaming en tiempo real** que integra **Apache Kafka**, **Machine Learning** y **MySQL** para predecir el **Happiness Score** de países basándose en datos del World Happiness Report (2015-2019).
+Sistema de streaming en tiempo real que integra Apache Kafka, Machine Learning y MySQL para predecir el Happiness Score de países basándose en datos del World Happiness Report (2015-2019).
 
-### 🎯 Objetivo
-Implementar un pipeline ETL completo con streaming de datos, predicción en tiempo real usando un modelo de Regresión Lineal, y almacenamiento persistente en base de datos.
+### Objetivo
+Implementar un pipeline ETL completo con streaming de datos, predicción en tiempo real usando un modelo de Regresión Lineal Multiple con One-Hot Encoding para países, y almacenamiento persistente en base de datos con visualización de KPIs.
 
 ---
 
-## 🏗️ Arquitectura del Sistema
+## Arquitectura del Sistema
 
 ```
-📊 CSV Files (2015-2019)
+CSV Files (2015-2019)
     ↓
-🔄 Kafka Producer (Python)
+Kafka Producer (Python)
     ↓
-📡 Apache Kafka Topic: "happiness-data"
+Apache Kafka Topic: "happiness-data"
     ↓
-🤖 Kafka Consumer (Python)
-    ├─ Load ML Model (.pkl)
+Kafka Consumer (Python)
+    ├─ Load ML Model + Preprocessor (.pkl)
     ├─ Predict Happiness Score
     └─ Store in MySQL
     ↓
-💾 MySQL Database: predictions
+MySQL Database: predictions
     ↓
-📈 Analysis & Visualization
+KPI Dashboard Generator (HTML)
 ```
 
 ---
 
-## 🗂️ Estructura del Proyecto
+## Estructura del Proyecto
 
 ```
 Workshop 3/
 │
-├── csv/                                    # Datos originales
+├── csv/                                   
 │   ├── 2015.csv
 │   ├── 2016.csv
 │   ├── 2017.csv
 │   ├── 2018.csv
 │   └── 2019.csv
 │
-├── EDA_Happiness_Report.ipynb              # 📊 Análisis exploratorio
-├── Modelos_Regresion_Happiness.ipynb      # 🤖 Entrenamiento del modelo
-├── Evaluacion_Streaming_Kafka.ipynb       # 📈 Evaluación y visualizaciones
+├── data/                                  
+│   └── predictions_streaming.csv
 │
-├── model_utils.py                          # 🛠️ Utilidades para el modelo
-├── kafka_producer.py                       # 📤 Productor Kafka
-├── kafka_consumer.py                       # 📥 Consumidor Kafka
+├── kafka/                                
+│   ├── kafka_consumer.py                   
+│   └── kafka_producer.py                  
 │
-├── modelo_regresion_lineal.pkl            # 💾 Modelo entrenado
-├── combined_data.csv                       # 📊 Datos combinados (2015-2019)
+├── kpis/                                  
+│   ├── generar_kpis.py                    
+│   └── dashboard_kpis.html                
 │
-├── docker-compose.yml                      # 🐳 Configuración Docker
-├── requirements_kafka.txt                  # 📦 Dependencias
+├── model_regresion/                        
+│   ├── modelo_regresion_lineal.pkl         
+│   └── model_utils.py                      
 │
-└── README.md                               # 📖 Este archivo
+├── notebooks/                              
+│   ├── EDA_Happiness_Report.ipynb         
+│   └── Modelos_Regresion_Happiness.ipynb   
+│
+├── docker-compose.yml                      
+├── requirements.txt                       
+└── README.md                               
 ```
 
 ---
 
-## 🚀 Instalación y Setup
+## Instalación y Setup
 
-### **1. Prerequisitos**
+### 1. Prerequisitos
 
 - Python 3.12+
 - Docker Desktop
 - MySQL Server (local o Docker)
 - Git
 
-### **2. Clonar el Repositorio**
+### 2. Clonar el Repositorio
 
 ```bash
-git clone <tu-repositorio>
+git clone https://github.com/JuanHoyos329/Workshop-3.git
 cd "Workshop 3"
 ```
 
-### **3. Crear Entorno Virtual**
+### 3. Crear Entorno Virtual
 
 ```powershell
 # Windows PowerShell
 python -m venv .kafka
-.\.kafka\Scripts\Activate.ps1
+.\.kafka\Scripts\Activate
 ```
 
-### **4. Instalar Dependencias**
+### 4. Instalar Dependencias
 
 ```powershell
-pip install -r requirements_kafka.txt
-pip install kafka-python-ng  # Importante: Para Python 3.12+
-pip install mysql-connector-python
+pip install -r requirements.txt
 ```
 
-### **5. Levantar Kafka con Docker**
+### 5. Levantar Kafka con Docker
 
 ```powershell
 docker-compose up -d
@@ -117,67 +122,61 @@ Deberías ver:
 
 ---
 
-## 🎯 Ejecución del Sistema
+## Ejecución del Sistema
 
-### **PASO 1: Entrenar el Modelo** 🤖
+### PASO 1: Entrenar el Modelo
 
 ```powershell
+cd model_regresion
 python model_utils.py
 ```
 
-**Salida esperada:**
-```
-✅ Modelo entrenado y guardado exitosamente en: modelo_regresion_lineal.pkl
+Salida esperada:
+- Modelo entrenado con One-Hot Encoding para Country
+- Archivo `modelo_regresion_lineal.pkl` generado (contiene modelo + preprocessor)
+- Métricas de evaluación mostradas
 
-📊 MÉTRICAS DEL MODELO:
-   R² Score: 0.7519
-   MAE:      0.4321
-   RMSE:     0.5566
-   MAPE:     8.68%
-```
+### PASO 2: Iniciar el Consumidor Kafka
 
----
-
-### **PASO 2: Iniciar el Consumidor Kafka** 📥
-
-**En una nueva terminal:**
+En una nueva terminal:
 
 ```powershell
+cd kafka
 python kafka_consumer.py
 ```
 
-**Salida esperada:**
-```
-✅ Conectado a MySQL: happiness_db
-✅ Tabla 'predictions' verificada
-✅ Modelo cargado exitosamente
-🎯 Consumer iniciado. Esperando mensajes...
-```
 
----
+### PASO 3: Ejecutar el Productor Kafka
 
-### **PASO 3: Ejecutar el Productor Kafka** 📤
-
-**En otra terminal:**
+En otra terminal:
 
 ```powershell
+cd kafka
 python kafka_producer.py
 ```
 
-**Salida esperada:**
-```
-🔄 Iniciando Kafka Producer...
-✅ Conectado a Kafka: localhost:9092
-📤 Enviando mensajes...
-   [1/100] Finland 2015 ✅
-   [2/100] Denmark 2015 ✅
-   ...
-✅ Transmisión completada: 100 mensajes enviados
+El productor:
+- Extrae datos de CSV (2015-2019)
+- Divide en train/test (70-30) con estratificación por país
+- Envía registros a Kafka topic `happiness-data`
+
+### PASO 4: Generar Dashboard de KPIs
+
+```powershell
+cd kpis
+python generar_kpis.py
 ```
 
----
+Abre el archivo generado `dashboard_kpis.html` en tu navegador. El dashboard incluye:
+- Métricas de rendimiento (R², MAE, RMSE, MAPE)
+- Comparación Train vs Test
+- Mapa mundial interactivo con filtros (Actual/Train/Test)
+- Top 10 países más felices
+- Evolución temporal (escala fija 5-6)
+- Distribución de errores
+- Análisis por región
 
-### **PASO 4: Verificar Datos en MySQL** 💾
+### PASO 5: Verificar Datos en MySQL
 
 ```sql
 USE happiness_db;
@@ -185,90 +184,99 @@ USE happiness_db;
 -- Ver total de predicciones
 SELECT COUNT(*) FROM predictions;
 
--- Ver primeras 10 predicciones
-SELECT country, year, actual_score, predicted_score, prediction_error 
+-- Ver predicciones por tipo
+SELECT type_model, COUNT(*) as total 
 FROM predictions 
-LIMIT 10;
+GROUP BY type_model;
 
--- Países con mayor error de predicción
-SELECT country, year, actual_score, predicted_score, 
-       ABS(prediction_error) as error_absoluto
-FROM predictions
-ORDER BY error_absoluto DESC
+-- Top 10 países con mejor predicción
+SELECT country, AVG(actual_score) as avg_actual, 
+       AVG(predicted_score) as avg_predicted,
+       AVG(prediction_error) as avg_error
+FROM predictions 
+GROUP BY country 
+ORDER BY avg_actual DESC 
 LIMIT 10;
 ```
 
 ---
 
-### **PASO 5: Análisis y Visualizaciones** 📊
+## Resultados del Modelo
 
-Abre el notebook:
+### Modelo: Regresión Lineal Múltiple con One-Hot Encoding
 
-```powershell
-jupyter notebook Evaluacion_Streaming_Kafka.ipynb
-```
+**Características del modelo:**
+- 6 features numéricas
+- 1 variable categórica (Country) → ~157 variables dummy
+- Total: 163 features después del One-Hot Encoding
+- División: 70% train / 30% test con estratificación por país
 
-Este notebook genera:
-- ✅ Gráficos de predicciones vs valores reales
-- ✅ Distribución de errores
-- ✅ Top 10 países con mejor Happiness Score
-- ✅ Evolución temporal
-- ✅ Performance del streaming
+### Métricas de Evaluación
 
----
+| Métrica | Train | Test | Interpretación |
+|---------|-------|------|----------------|
+| R² | 0.9847 | 0.9749 | Excelente ajuste del modelo |
+| MAE | 0.0969 | 0.1229 | Error absoluto promedio bajo |
+| RMSE | 0.1381 | 0.1767 | Raíz del error cuadrático medio |
+| MAPE | 1.88% | 2.37% | Error porcentual muy bajo |
 
-## 📊 Resultados del Modelo
+**Nota:** La inclusión de la variable Country mejoró significativamente el R² de 0.75 a 0.98.
 
-### **Métricas de Evaluación**
+### Features Utilizadas
 
-| Métrica | Valor | Interpretación |
-|---------|-------|----------------|
-| **R²** | 0.7519 | El modelo explica el 75.19% de la variabilidad |
-| **MAE** | 0.4321 | Error absoluto promedio de 0.43 puntos |
-| **RMSE** | 0.5566 | Raíz del error cuadrático medio |
-| **MAPE** | 8.68% | Error porcentual relativo bajo |
+**Numéricas (6):**
+1. GDP per capita - PIB per cápita
+2. Social support - Soporte social
+3. Healthy life expectancy - Esperanza de vida saludable
+4. Freedom to make life choices - Libertad para elegir
+5. Generosity - Generosidad
+6. Perceptions of corruption - Percepción de corrupción
 
-### **Features Utilizadas (6)**
-
-1. **GDP per capita** - PIB per cápita
-2. **Social support** - Soporte social
-3. **Healthy life expectancy** - Esperanza de vida saludable
-4. **Freedom to make life choices** - Libertad para elegir
-5. **Generosity** - Generosidad
-6. **Perceptions of corruption** - Percepción de corrupción
+**Categórica (1):**
+- Country - País (One-Hot Encoding → 157 dummies)
 
 ---
 
-## 🔧 Decisiones Técnicas Clave
+## Decisiones Técnicas Clave
 
-### **1. ¿Por qué Regresión Lineal?**
-- ✅ Simplicidad e interpretabilidad
-- ✅ R² de 75.19% es excelente para ciencias sociales
-- ✅ Entrenamiento rápido (ideal para streaming)
-- ✅ Relaciones lineales claras entre variables
+### 1. ¿Por qué Regresión Lineal con One-Hot Encoding?
+- Simplicidad e interpretabilidad mantenida
+- R² de 98% con la inclusión de Country
+- Entrenamiento rápido (ideal para streaming)
+- Captura efectos específicos por país
+- El preprocessor (ColumnTransformer) maneja automáticamente la transformación
 
-### **2. ¿Por qué Kafka?**
-- ✅ Streaming en tiempo real
-- ✅ Escalabilidad horizontal
-- ✅ Tolerancia a fallos
-- ✅ Procesamiento asíncrono
+### 2. ¿Por qué Kafka?
+- Streaming en tiempo real
+- Escalabilidad horizontal
+- Tolerancia a fallos
+- Procesamiento asíncrono
+- Desacoplamiento productor-consumidor
 
-### **3. ¿Por qué MySQL?**
-- ✅ Persistencia de predicciones
-- ✅ Queries SQL para análisis
-- ✅ Compatibilidad con herramientas BI
-- ✅ Índices para consultas rápidas
+### 3. ¿Por qué MySQL?
+- Persistencia de predicciones
+- Queries SQL para análisis
+- Compatibilidad con herramientas BI
+- Índices para consultas rápidas
+- Fácil integración con dashboards
 
-### **4. División 70-30**
-- **70% Training** (546 registros)
-- **30% Test** (235 registros)
+### 4. División 70-30 Estratificada
+- 70% Training (~547 registros)
+- 30% Test (~234 registros)
 - `random_state=42` para reproducibilidad
+- Estratificación por país para asegurar representación en ambos conjuntos
+- Países con 1 solo registro se dividen aleatoriamente
+
+### 5. Arquitectura de Archivos .pkl
+- Un solo archivo contiene modelo + preprocessor
+- Estructura: `{'modelo': LinearRegression, 'preprocessor': ColumnTransformer}`
+- Facilita deployment y garantiza consistencia en transformaciones
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
-### **Error: Kafka no inicia**
+### Error: Kafka no inicia
 
 ```powershell
 # Ver logs de Kafka
@@ -277,121 +285,109 @@ docker logs kafka
 # Reiniciar contenedores
 docker-compose down
 docker-compose up -d
+
+# Esperar 10-15 segundos para que Kafka esté listo
 ```
 
-### **Error: MySQL connection refused**
+### Error: NoBrokersAvailable
+
+Este error indica que Kafka aún no está completamente iniciado. Espera 10-15 segundos después de `docker-compose up -d` antes de ejecutar el consumer.
+
+### Error: MySQL connection refused
+
+Verifica las credenciales en `kafka_consumer.py`:
 
 ```python
-# Verificar credenciales en kafka_consumer.py
 mysql_config = {
     'host': 'localhost',
     'port': 3306,
+    'database': 'happiness_db',
     'user': 'root',
-    'password': 'tu_password'  # ⚠️ Cambiar aquí
+    'password': 'tu_password'  # Cambiar aquí
 }
 ```
 
-### **Error: ModuleNotFoundError kafka**
+### Error: Modelo no cargado
+
+Asegúrate de haber ejecutado primero:
 
 ```powershell
-# Instalar kafka-python-ng (no kafka-python)
-pip install kafka-python-ng
+cd model_regresion
+python model_utils.py
 ```
 
-### **Error: Puerto 3306 en uso**
+Esto genera el archivo `modelo_regresion_lineal.pkl` necesario para las predicciones.
 
-```powershell
-# Verificar MySQL local
-netstat -ano | findstr :3306
+### Error: Estratificación (ValueError: least populated class)
 
-# Detener servicio MySQL local si es necesario
-net stop MySQL80
-```
+Este error ocurría en versiones anteriores cuando había países con un solo registro. La versión actual maneja esto automáticamente separando países con múltiples registros (estratificados) de países con un solo registro (división aleatoria).
 
 ---
 
-## 📈 Dashboard de KPIs
+## Dashboard de KPIs
 
-El sistema incluye un dashboard ejecutivo con visualizaciones consolidadas:
+El sistema incluye un dashboard interactivo HTML con visualizaciones consolidadas:
 
-### Ejecución del Dashboard
+### Características del Dashboard
 
-```powershell
-cd dashboard
-python dashboard_kpis.py
-```
+- **Métricas principales:** R², MAE, RMSE, MAPE, Records, Countries, Years
+- **Tabla comparativa:** Train vs Test (sin columna Total)
+- **Mapa mundial interactivo:** Filtros para Actual/Train/Test
+- **Scatter plots:** Predicciones vs Actual con filtros
+- **Top 10 países:** Comparación de barras agrupadas
+- **Evolución temporal:** Escala fija 5-6 con intervalos de 0.2
+- **Análisis por región:** Performance por área geográfica
+- **Distribución de errores:** Histogramas Train vs Test
 
-### Visualizaciones Generadas
+### Tecnologías
 
-1. **dashboard_kpis_cards.png** - 8 tarjetas de KPIs principales
-2. **dashboard_performance.png** - Dashboard consolidado con 5 gráficos
+- Plotly para gráficos interactivos
+- HTML/CSS/JavaScript para interfaz
+- Pandas para procesamiento de datos
+- MySQL como fuente de datos
 
-Ver `dashboard/README.md` para más detalles.
+## Hallazgos del EDA
 
----
+### Correlaciones Principales
 
-## 📦 Entregables
+- GDP per capita tiene la correlación más fuerte con Happiness Score (~0.78)
+- Social support y Healthy life expectancy también muy correlacionadas
+- Generosity tiene la correlación más débil
+- Corruption tiene correlación negativa (más corrupción = menos felicidad)
 
-- ✅ **README.md** - Documentación completa
-- ✅ **EDA_Happiness_Report.ipynb** - Análisis exploratorio
-- ✅ **Modelos_Regresion_Happiness.ipynb** - Entrenamiento
-- ✅ **Evaluacion_Streaming_Kafka.ipynb** - Evaluación
-- ✅ **kafka_producer.py** - Código del productor
-- ✅ **kafka_consumer.py** - Código del consumidor
-- ✅ **modelo_regresion_lineal.pkl** - Modelo entrenado
-- ✅ **predictions_streaming.csv** - Predicciones exportadas
-- ✅ **metricas_resumen.csv** - KPIs del modelo
-- ✅ **Visualizaciones PNG** - Gráficos del desempeño
-
----
-
-## 🎓 Hallazgos del EDA
-
-### **Correlaciones Principales**
-
-- **GDP per capita** tiene la correlación más fuerte con Happiness Score (~0.78)
-- **Social support** y **Healthy life expectancy** también muy correlacionadas
-- **Generosity** tiene la correlación más débil
-- **Corruption** tiene correlación negativa (más corrupción = menos felicidad)
-
-### **Patrones Encontrados**
+### Patrones Encontrados
 
 1. Países nórdicos (Finlandia, Dinamarca, Noruega) consistentemente en top 10
 2. GDP alto no garantiza felicidad, pero ayuda significativamente
 3. Soporte social es crítico incluso en países con GDP bajo
 4. La esperanza de vida saludable es más importante que la expectativa total
+5. La inclusión de Country como variable categórica captura efectos culturales/geográficos específicos
 
 ---
 
-## 👥 Autor
+## Tecnologías Utilizadas
 
-**Juan A.**  
+- **Python 3.12+:** Lenguaje principal
+- **Apache Kafka 7.5.0:** Streaming de datos
+- **MySQL 8.0+:** Base de datos
+- **Scikit-Learn:** Machine Learning (LinearRegression, OneHotEncoder, ColumnTransformer)
+- **Pandas & NumPy:** Procesamiento de datos
+- **Plotly:** Visualizaciones interactivas
+- **Docker:** Contenedorización de Kafka y Zookeeper
+- **Kafka-Python:** Cliente de Kafka para Python
+
+## Autor
+
+Juan A. Hoyos  
 Workshop 3 - ETL con Kafka y Machine Learning
 
----
-
-## 📄 Licencia
+## Licencia
 
 Este proyecto es parte de un workshop educativo.
 
----
-
-## 🔗 Referencias
+## Referencias
 
 - [World Happiness Report](https://worldhappiness.report/)
 - [Apache Kafka Documentation](https://kafka.apache.org/documentation/)
 - [Scikit-Learn Documentation](https://scikit-learn.org/)
-
----
-
-## 🚀 Próximos Pasos
-
-- [ ] Implementar más modelos (Random Forest, XGBoost)
-- [ ] Dashboard en tiempo real con Streamlit
-- [ ] Deployment en la nube (AWS, Azure)
-- [ ] CI/CD con GitHub Actions
-- [ ] Monitoreo con Prometheus + Grafana
-
----
-
-**⭐ Si este proyecto te fue útil, considera darle una estrella en GitHub!**
+- [Plotly Documentation](https://plotly.com/python/)
