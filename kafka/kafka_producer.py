@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 class HappinessKafkaProducer:
     """
     Productor de Kafka para datos de World Happiness Report.
-    Envía registros de características de felicidad a un topic de Kafka.
+    
+    Proceso ETL:
+    1. EXTRACT: Carga datos desde CSV
+    2. TRANSFORM: Limpia nulos, divide train/test (70-30), prepara registros
+    3. LOAD: Envía registros a Kafka topic para streaming
     """
     
     def __init__(self, 
@@ -52,34 +56,209 @@ class HappinessKafkaProducer:
             logger.error(f"❌ Error al inicializar productor Kafka: {e}")
             raise
     
-    def load_data(self, csv_path: str) -> pd.DataFrame:
+    # =========================================================================
+    # EXTRACT: Extracción de datos desde fuente (CSV)
+    # =========================================================================
+    
+    def extract_csv_files(self) -> pd.DataFrame:
         """
-        Carga los datos desde un archivo CSV.
+        [ETL - EXTRACT] Extrae datos desde archivos CSV individuales (2015-2019).
+        Aplica normalización de columnas específica por año.
+        
+        Returns:
+            DataFrame combinado con todos los años
+        """
+        import os
+        import glob
+        
+        # Obtener rutas
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(script_dir)
+        csv_dir = os.path.join(project_root, 'csv')
+        
+        logger.info(f"📥 [EXTRACT] Cargando archivos CSV desde {csv_dir}...")
+        
+        # Buscar todos los CSV de años
+        csv_files = glob.glob(os.path.join(csv_dir, '*.csv'))
+        csv_files = [f for f in csv_files if any(year in os.path.basename(f) for year in ['2015', '2016', '2017', '2018', '2019'])]
+        
+        if not csv_files:
+            raise FileNotFoundError(f"❌ No se encontraron archivos CSV en {csv_dir}")
+        
+        # Mapeo de columnas por año (mismo que model_utils.py)
+        column_mappings = {
+            2015: {
+                'Country': 'Country',
+                'Region': 'Region',
+                'Happiness Score': 'Score',
+                'Economy (GDP per Capita)': 'GDP per capita',
+                'Family': 'Social support',
+                'Health (Life Expectancy)': 'Healthy life expectancy',
+                'Freedom': 'Freedom to make life choices',
+                'Trust (Government Corruption)': 'Perceptions of corruption',
+                'Generosity': 'Generosity'
+            },
+            2016: {
+                'Country': 'Country',
+                'Region': 'Region',
+                'Happiness Score': 'Score',
+                'Economy (GDP per Capita)': 'GDP per capita',
+                'Family': 'Social support',
+                'Health (Life Expectancy)': 'Healthy life expectancy',
+                'Freedom': 'Freedom to make life choices',
+                'Trust (Government Corruption)': 'Perceptions of corruption',
+                'Generosity': 'Generosity'
+            },
+            2017: {
+                'Country': 'Country',
+                'Region': 'Region',
+                'Happiness.Score': 'Score',
+                'Economy..GDP.per.Capita.': 'GDP per capita',
+                'Family': 'Social support',
+                'Health..Life.Expectancy.': 'Healthy life expectancy',
+                'Freedom': 'Freedom to make life choices',
+                'Trust..Government.Corruption.': 'Perceptions of corruption',
+                'Generosity': 'Generosity'
+            },
+            2018: {
+                'Country or region': 'Country',
+                'Region': 'Region',
+                'Score': 'Score',
+                'GDP per capita': 'GDP per capita',
+                'Social support': 'Social support',
+                'Healthy life expectancy': 'Healthy life expectancy',
+                'Freedom to make life choices': 'Freedom to make life choices',
+                'Perceptions of corruption': 'Perceptions of corruption',
+                'Generosity': 'Generosity'
+            },
+            2019: {
+                'Country or region': 'Country',
+                'Region': 'Region',
+                'Score': 'Score',
+                'GDP per capita': 'GDP per capita',
+                'Social support': 'Social support',
+                'Healthy life expectancy': 'Healthy life expectancy',
+                'Freedom to make life choices': 'Freedom to make life choices',
+                'Perceptions of corruption': 'Perceptions of corruption',
+                'Generosity': 'Generosity'
+            }
+        }
+        
+        dfs = []
+        for file in sorted(csv_files):
+            year = int(os.path.basename(file).split('.')[0])
+            df = pd.read_csv(file)
+            
+            # Para 2017, 2018, 2019: agregar columna Region si no existe
+            # Leer Region de 2015 como referencia
+            if 'Region' not in df.columns and year >= 2017:
+                # Cargar mapping de región desde 2015
+                ref_file = os.path.join(csv_dir, '2015.csv')
+                if os.path.exists(ref_file):
+                    df_ref = pd.read_csv(ref_file)[['Country', 'Region']]
+                    # Merge para obtener región
+                    df = df.merge(df_ref, left_on='Country' if 'Country' in df.columns else 'Country or region', 
+                                 right_on='Country', how='left', suffixes=('', '_ref'))
+                    # Si hay duplicado de Country, eliminar
+                    if 'Country_ref' in df.columns:
+                        df = df.drop(columns=['Country_ref'])
+                    # Rellenar regiones faltantes con 'Other'
+                    if 'Region' in df.columns:
+                        df['Region'] = df['Region'].fillna('Other')
+                    else:
+                        df['Region'] = 'Other'
+            
+            # Aplicar mapeo de columnas específico del año
+            if year in column_mappings:
+                mapping = column_mappings[year]
+                cols_to_select = {old: new for old, new in mapping.items() if old in df.columns}
+                df = df[list(cols_to_select.keys())].rename(columns=cols_to_select)
+            
+            df['Year'] = year
+            dfs.append(df)
+            logger.info(f"   ✅ {os.path.basename(file)}: {len(df)} registros")
+        
+        df_combined = pd.concat(dfs, ignore_index=True)
+        logger.info(f"📊 [EXTRACT] Total extraído: {len(df_combined)} registros (2015-2019)")
+        
+        return df_combined
+    
+    # =========================================================================
+    # TRANSFORM: Transformación y preparación de datos
+    # =========================================================================
+    
+    def transform_clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        [ETL - TRANSFORM] Limpia datos eliminando valores nulos en columnas críticas.
         
         Args:
-            csv_path: Ruta al archivo CSV
+            df: DataFrame original
             
         Returns:
-            DataFrame con los datos cargados
+            DataFrame limpio sin valores nulos (con índices reseteados)
         """
-        try:
-            df = pd.read_csv(csv_path)
-            logger.info(f"✅ Datos cargados desde {csv_path}: {len(df)} registros")
-            return df
-        except Exception as e:
-            logger.error(f"❌ Error al cargar datos: {e}")
-            raise
+        feature_columns = [
+            'GDP per capita', 'Social support', 'Healthy life expectancy',
+            'Freedom to make life choices', 'Generosity', 
+            'Perceptions of corruption', 'Score'
+        ]
+        
+        initial_count = len(df)
+        df_clean = df.dropna(subset=feature_columns)
+        removed_count = initial_count - len(df_clean)
+        
+        # CRÍTICO: Resetear índices para que sean consecutivos (0, 1, 2, ...)
+        # Esto asegura que train_test_split funcione correctamente
+        df_clean = df_clean.reset_index(drop=True)
+        
+        logger.info(f"🧹 [TRANSFORM] Limpieza completada:")
+        logger.info(f"   - Registros válidos: {len(df_clean)}")
+        logger.info(f"   - Registros eliminados: {removed_count}")
+        logger.info(f"   - Índices reseteados: 0 a {len(df_clean)-1}")
+        
+        return df_clean
     
-    def prepare_record(self, row: pd.Series, index: int) -> Dict[str, Any]:
+    def transform_split_train_test(self, df: pd.DataFrame) -> tuple:
         """
-        Prepara un registro para enviar a Kafka.
+        [ETL - TRANSFORM] Divide datos en conjuntos de entrenamiento y prueba.
+        Usa el mismo random_state=42 que el modelo para consistencia.
+        
+        Args:
+            df: DataFrame limpio
+            
+        Returns:
+            Tupla (train_indices, test_indices) como sets
+        """
+        from sklearn.model_selection import train_test_split
+        
+        # Crear índices para el split
+        indices = df.index.tolist()
+        train_idx, test_idx = train_test_split(
+            indices, 
+            test_size=0.3, 
+            random_state=42
+        )
+        
+        train_indices = set(train_idx)
+        test_indices = set(test_idx)
+        
+        logger.info(f"📊 [TRANSFORM] División 70-30 completada:")
+        logger.info(f"   - Entrenamiento: {len(train_indices)} registros (70%)")
+        logger.info(f"   - Prueba: {len(test_indices)} registros (30%)")
+        
+        return train_indices, test_indices
+    
+    def transform_prepare_record(self, row: pd.Series, index: int, type_model: str = 'unknown') -> Dict[str, Any]:
+        """
+        [ETL - TRANSFORM] Transforma una fila del DataFrame en un registro estructurado.
         
         Args:
             row: Fila del DataFrame
             index: Índice del registro
+            type_model: Tipo de conjunto ('train' o 'test')
             
         Returns:
-            Diccionario con el registro formateado
+            Diccionario con el registro formateado para Kafka
         """
         # Características para el modelo (features)
         features = {
@@ -96,16 +275,22 @@ class HappinessKafkaProducer:
             'record_id': index,
             'timestamp': time.time(),
             'country': str(row.get('Country', 'Unknown')),
+            'region': str(row.get('Region', 'Other')),
             'year': int(row.get('Year', 0)),
             'actual_score': float(row.get('Score', 0)),
+            'type_model': type_model,
             'features': features
         }
         
         return record
     
-    def send_record(self, record: Dict[str, Any]) -> None:
+    # =========================================================================
+    # LOAD: Carga de datos a Kafka
+    # =========================================================================
+    
+    def load_to_kafka(self, record: Dict[str, Any]) -> None:
         """
-        Envía un registro a Kafka.
+        [ETL - LOAD] Carga un registro transformado al topic de Kafka.
         
         Args:
             record: Diccionario con el registro a enviar
@@ -141,60 +326,96 @@ class HappinessKafkaProducer:
         """Callback cuando hay error al enviar mensaje"""
         logger.error(f"❌ Error al enviar mensaje: {excp}")
     
-    def stream_data(self, 
-                    csv_path: str, 
-                    delay: float = 0.5,
-                    max_records: int = None) -> None:
+    # =========================================================================
+    # PROCESO ETL COMPLETO
+    # =========================================================================
+    
+    def run_etl_pipeline(self, 
+                         delay: float = 0.5,
+                         max_records: int = None) -> None:
         """
-        Transmite datos desde CSV a Kafka en modo streaming.
+        [ETL PIPELINE] Ejecuta el pipeline completo Extract → Transform → Load.
+        
+        Proceso:
+        1. EXTRACT: Lee datos desde CSV individuales (2015-2019)
+        2. TRANSFORM: Limpia datos, divide train/test, prepara registros
+        3. LOAD: Envía registros a Kafka en modo streaming
         
         Args:
-            csv_path: Ruta al archivo CSV
             delay: Tiempo de espera entre registros (segundos)
             max_records: Máximo número de registros a enviar (None = todos)
         """
         try:
-            # Cargar datos
-            df = self.load_data(csv_path)
+            logger.info("="*80)
+            logger.info("🔄 INICIANDO PIPELINE ETL - PRODUCER")
+            logger.info("="*80)
             
-            # Limpiar datos nulos
-            feature_columns = [
-                'GDP per capita', 'Social support', 'Healthy life expectancy',
-                'Freedom to make life choices', 'Generosity', 
-                'Perceptions of corruption', 'Score'
-            ]
-            df_clean = df.dropna(subset=feature_columns)
+            # ==================== EXTRACT ====================
+            logger.info("\n📥 FASE 1: EXTRACT")
+            df = self.extract_csv_files()
             
-            logger.info(f"📊 Registros válidos: {len(df_clean)}")
+            # ==================== TRANSFORM ====================
+            logger.info("\n🔄 FASE 2: TRANSFORM")
+            
+            # Transformación 1: Limpiar datos
+            df_clean = self.transform_clean_data(df)
             
             # Limitar registros si se especifica
             if max_records:
                 df_clean = df_clean.head(max_records)
-                logger.info(f"🔢 Limitando a {max_records} registros")
+                logger.info(f"🔢 [TRANSFORM] Limitando a {max_records} registros")
             
-            # Transmitir datos
-            logger.info("🚀 Iniciando transmisión de datos...")
+            # Transformación 2: Dividir train/test
+            train_indices, test_indices = self.transform_split_train_test(df_clean)
+            
+            # ==================== LOAD ====================
+            logger.info("\n📤 FASE 3: LOAD")
+            logger.info("🚀 Iniciando carga a Kafka...")
             
             records_sent = 0
+            train_sent = 0
+            test_sent = 0
+            
             for idx, row in df_clean.iterrows():
-                # Preparar registro
-                record = self.prepare_record(row, idx)
+                # Determinar si es train o test
+                if idx in train_indices:
+                    type_model = 'train'
+                    train_sent += 1
+                elif idx in test_indices:
+                    type_model = 'test'
+                    test_sent += 1
+                else:
+                    type_model = 'unknown'
+                    logger.warning(f"⚠️ Índice {idx} no encontrado en train ni test")
                 
-                # Enviar a Kafka
-                self.send_record(record)
+                # Transformación 3: Preparar registro
+                record = self.transform_prepare_record(row, idx, type_model)
+                
+                # Load: Enviar a Kafka
+                self.load_to_kafka(record)
                 records_sent += 1
                 
                 # Log cada batch
                 if records_sent % self.batch_size == 0:
                     self.producer.flush()  # Forzar envío
-                    logger.info(f"📤 Enviados {records_sent}/{len(df_clean)} registros")
+                    logger.info(
+                        f"📤 [LOAD] Enviados {records_sent}/{len(df_clean)} | "
+                        f"Train: {train_sent} | Test: {test_sent}"
+                    )
                 
                 # Esperar antes del siguiente registro (simular streaming)
                 time.sleep(delay)
             
             # Flush final
             self.producer.flush()
-            logger.info(f"✅ Transmisión completada: {records_sent} registros enviados")
+            
+            logger.info("\n" + "="*80)
+            logger.info("✅ PIPELINE ETL COMPLETADO")
+            logger.info("="*80)
+            logger.info(f"📊 Total registros enviados: {records_sent}")
+            logger.info(f"   - Train: {train_sent} ({train_sent/records_sent*100:.1f}%)")
+            logger.info(f"   - Test: {test_sent} ({test_sent/records_sent*100:.1f}%)")
+            logger.info("="*80)
             
         except KeyboardInterrupt:
             logger.warning("⚠️ Transmisión interrumpida por usuario")
@@ -217,48 +438,6 @@ class HappinessKafkaProducer:
 # FUNCIÓN PRINCIPAL
 # =============================================================================
 
-def verificar_combined_data():
-    """
-    Verifica si existe combined_data.csv generado por el ETL.
-    Si no existe, ejecuta el ETL automáticamente.
-    
-    Returns:
-        Ruta del archivo combined_data.csv
-    """
-    import os
-    import subprocess
-    
-    # Ruta absoluta al archivo de datos
-    script_dir = os.path.dirname(os.path.abspath(__file__))  # kafka/
-    project_root = os.path.dirname(script_dir)  # Workshop 3/
-    combined_path = os.path.join(project_root, 'data', 'combined_data.csv')
-    
-    # Verificar si existe el archivo
-    if os.path.exists(combined_path):
-        logger.info(f"✅ Archivo encontrado: {combined_path}")
-        return combined_path
-    else:
-        logger.warning(f"⚠️  No se encontró {combined_path}")
-        logger.info("🔄 Ejecutando ETL para generar combined_data.csv...")
-        
-        try:
-            # Ejecutar el script ETL
-            result = subprocess.run(['python', 'etl.py'], 
-                                  capture_output=True, 
-                                  text=True,
-                                  check=True)
-            logger.info("✅ ETL ejecutado exitosamente")
-            return combined_path
-        except subprocess.CalledProcessError as e:
-            logger.error(f"❌ Error al ejecutar ETL: {e}")
-            logger.error(f"Salida: {e.stdout}")
-            logger.error(f"Error: {e.stderr}")
-            raise
-        except FileNotFoundError:
-            logger.error("❌ No se encontró etl.py. Por favor ejecuta 'python etl.py' primero.")
-            raise
-
-
 def main():
     """Función principal para ejecutar el productor"""
     
@@ -266,12 +445,9 @@ def main():
     KAFKA_SERVER = 'localhost:9092'
     TOPIC = 'happiness-data'
     DELAY = 0.1  # Segundos entre registros 
-    MAX_RECORDS = None  
+    MAX_RECORDS = None  # None = enviar todos los registros
     
-    # Verificar y cargar datos combinados del ETL
-    logger.info("📊 Verificando datos combinados (2015-2019)...")
-    CSV_FILE = verificar_combined_data()
-    logger.info(f"📁 Usando archivo: {CSV_FILE}")
+    logger.info("📊 El productor ejecutará su propio ETL desde CSV (2015-2019)")
     
     # Crear productor
     producer = HappinessKafkaProducer(
@@ -280,9 +456,8 @@ def main():
         batch_size=10
     )
     
-    # Transmitir datos
-    producer.stream_data(
-        csv_path=CSV_FILE,
+    # Ejecutar pipeline ETL (extrae desde CSV originales)
+    producer.run_etl_pipeline(
         delay=DELAY,
         max_records=MAX_RECORDS
     )

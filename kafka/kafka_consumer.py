@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 class HappinessKafkaConsumer:
     """
     Consumidor de Kafka para predicción de Happiness Score en tiempo real.
-    Consume mensajes, realiza predicciones y almacena en MySQL.
+    
+    Proceso ETL:
+    1. EXTRACT: Lee mensajes desde Kafka topic
+    2. TRANSFORM: Extrae features, aplica modelo ML, calcula métricas
+    3. LOAD: Almacena predicciones y resultados en MySQL
     """
     
     def __init__(self,
@@ -151,8 +155,8 @@ class HappinessKafkaConsumer:
         create_table_query = """
         CREATE TABLE IF NOT EXISTS predictions (
             record_id INT AUTO_INCREMENT PRIMARY KEY,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             country VARCHAR(100),
+            region VARCHAR(100),
             year INT,
             
             -- Características (Features)
@@ -169,12 +173,14 @@ class HappinessKafkaConsumer:
             prediction_error FLOAT,
             
             -- Metadata
-            processing_time_ms FLOAT,
+            data_split VARCHAR(20),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             
             INDEX idx_country (country),
+            INDEX idx_region (region),
             INDEX idx_year (year),
-            INDEX idx_timestamp (timestamp)
+            INDEX idx_data_split (data_split),
+            INDEX idx_created_at (created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """
         
@@ -188,15 +194,37 @@ class HappinessKafkaConsumer:
             logger.error(f"❌ Error al crear tabla: {e}")
             raise
     
-    def extract_features(self, record: Dict[str, Any]) -> np.ndarray:
+    # =========================================================================
+    # EXTRACT: Extracción de datos desde Kafka
+    # =========================================================================
+    
+    def extract_from_kafka_message(self, message) -> Dict[str, Any]:
         """
-        Extrae las características del registro para predicción.
+        [ETL - EXTRACT] Extrae el registro completo del mensaje de Kafka.
+        
+        Args:
+            message: Mensaje de Kafka
+            
+        Returns:
+            Diccionario con los datos del registro
+        """
+        record = message.value
+        logger.debug(f"📥 [EXTRACT] Mensaje recibido: Record ID {record['record_id']}")
+        return record
+    
+    # =========================================================================
+    # TRANSFORM: Transformación y procesamiento de datos
+    # =========================================================================
+    
+    def transform_extract_features(self, record: Dict[str, Any]) -> np.ndarray:
+        """
+        [ETL - TRANSFORM] Extrae y ordena las características para el modelo.
         
         Args:
             record: Registro del mensaje de Kafka
             
         Returns:
-            Array de numpy con las características ordenadas
+            Array de numpy con las 6 características en el orden correcto
         """
         features = record['features']
         
@@ -212,15 +240,15 @@ class HappinessKafkaConsumer:
         
         return feature_vector
     
-    def predict(self, features: np.ndarray) -> float:
+    def transform_predict_score(self, features: np.ndarray) -> float:
         """
-        Realiza predicción usando el modelo cargado.
+        [ETL - TRANSFORM] Aplica el modelo ML para predecir el Happiness Score.
         
         Args:
-            features: Array de características
+            features: Array de características (6 features)
             
         Returns:
-            Score predicho
+            Score predicho por el modelo
         """
         try:
             # Verificar que el modelo existe
@@ -249,23 +277,46 @@ class HappinessKafkaConsumer:
             logger.error(f"   Features shape: {features.shape if features is not None else 'None'}")
             return 0.0
     
-    def save_to_mysql(self, record: Dict[str, Any], 
-                      predicted_score: float,
-                      processing_time: float) -> None:
+    def transform_calculate_metrics(self, actual_score: float, predicted_score: float) -> Dict[str, float]:
         """
-        Guarda el registro y la predicción en MySQL.
+        [ETL - TRANSFORM] Calcula métricas de error de la predicción.
         
         Args:
-            record: Registro original
+            actual_score: Score real
             predicted_score: Score predicho
-            processing_time: Tiempo de procesamiento en ms
+            
+        Returns:
+            Diccionario con métricas calculadas
+        """
+        metrics = {
+            'prediction_error': abs(actual_score - predicted_score),
+            'squared_error': (actual_score - predicted_score) ** 2,
+            'percentage_error': abs((actual_score - predicted_score) / actual_score) * 100 if actual_score != 0 else 0
+        }
+        logger.debug(f"📊 [TRANSFORM] Métricas calculadas: Error={metrics['prediction_error']:.4f}")
+        return metrics
+    
+    # =========================================================================
+    # LOAD: Carga de datos a MySQL y CSV
+    # =========================================================================
+    
+    def load_to_mysql(self, record: Dict[str, Any], 
+                      predicted_score: float,
+                      data_split: str) -> None:
+        """
+        [ETL - LOAD] Persiste el registro, predicción y métricas en MySQL.
+        
+        Args:
+            record: Registro original desde Kafka
+            predicted_score: Score predicho por el modelo
+            data_split: Tipo de conjunto de datos ('train' o 'test')
         """
         insert_query = """
         INSERT INTO predictions (
-            record_id, country, year,
+            country, region, year,
             gdp_per_capita, social_support, healthy_life_expectancy,
             freedom_to_make_life_choices, generosity, perceptions_of_corruption,
-            actual_score, predicted_score, prediction_error, processing_time_ms
+            actual_score, predicted_score, prediction_error, data_split
         ) VALUES (
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
@@ -275,9 +326,13 @@ class HappinessKafkaConsumer:
         actual_score = record['actual_score']
         prediction_error = abs(actual_score - predicted_score)
         
+        # Obtener región del mensaje de Kafka
+        country = record['country']
+        region = record.get('region', 'Other')
+        
         values = (
-            record['record_id'],
-            record['country'],
+            country,
+            region,
             record['year'],
             features['GDP_per_capita'],
             features['Social_support'],
@@ -288,7 +343,7 @@ class HappinessKafkaConsumer:
             actual_score,
             predicted_score,
             prediction_error,
-            processing_time
+            data_split
         )
         
         try:
@@ -296,77 +351,177 @@ class HappinessKafkaConsumer:
             cursor.execute(insert_query, values)
             self.mysql_conn.commit()
             cursor.close()
-            logger.debug(f"💾 Registro {record['record_id']} guardado en MySQL")
+            logger.debug(f"💾 Registro guardado en MySQL")
         except Error as e:
             logger.error(f"❌ Error al guardar en MySQL: {e}")
             self.mysql_conn.rollback()
     
-    def process_message(self, message) -> None:
+    def load_to_csv(self, csv_filename: str = 'predictions_streaming.csv') -> None:
         """
-        Procesa un mensaje de Kafka: predice y guarda.
+        [ETL - LOAD] Exporta todos los datos de MySQL a un archivo CSV en la carpeta data.
+        
+        Args:
+            csv_filename: Nombre del archivo CSV a generar
+        """
+        import pandas as pd
+        
+        # Determinar ruta del archivo CSV
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(script_dir)
+        data_dir = os.path.join(project_root, 'data')
+        
+        # Crear directorio si no existe
+        os.makedirs(data_dir, exist_ok=True)
+        
+        csv_path = os.path.join(data_dir, csv_filename)
+        
+        try:
+            logger.info("📤 [LOAD] Exportando datos a CSV...")
+            
+            # Consulta para obtener todos los datos
+            query = """
+            SELECT 
+                country, region, year,
+                gdp_per_capita, social_support, healthy_life_expectancy,
+                freedom_to_make_life_choices, generosity, perceptions_of_corruption,
+                actual_score, predicted_score, prediction_error,
+                data_split, created_at
+            FROM predictions
+            ORDER BY created_at
+            """
+            
+            # Cargar datos desde MySQL
+            df = pd.read_sql(query, self.mysql_conn)
+            
+            # Guardar a CSV
+            df.to_csv(csv_path, index=False)
+            
+            logger.info(f"✅ [LOAD] Datos exportados exitosamente")
+            logger.info(f"   📁 Archivo: {csv_path}")
+            logger.info(f"   📊 Registros: {len(df)}")
+            
+            # Mostrar estadísticas por data_split
+            if 'data_split' in df.columns:
+                split_counts = df['data_split'].value_counts()
+                logger.info(f"   📈 Distribución:")
+                for split, count in split_counts.items():
+                    logger.info(f"      - {split}: {count} registros")
+            
+        except Exception as e:
+            logger.error(f"❌ [LOAD] Error al exportar CSV: {e}")
+    
+    # =========================================================================
+    # PROCESO ETL COMPLETO
+    # =========================================================================
+    
+    def run_etl_on_message(self, message) -> None:
+        """
+        [ETL PIPELINE] Ejecuta el pipeline completo Extract → Transform → Load por mensaje.
+        
+        Proceso:
+        1. EXTRACT: Lee mensaje desde Kafka
+        2. TRANSFORM: Extrae features, predice score, calcula métricas
+        3. LOAD: Guarda predicción en MySQL
         
         Args:
             message: Mensaje de Kafka
         """
-        start_time = time.time()
-        
         try:
-            # Extraer datos del mensaje
-            record = message.value
+            # ==================== EXTRACT ====================
+            record = self.extract_from_kafka_message(message)
             
-            # Extraer características
-            features = self.extract_features(record)
+            # ==================== TRANSFORM ====================
+            # Transformación 1: Extraer features
+            features = self.transform_extract_features(record)
             
-            # Realizar predicción
-            predicted_score = self.predict(features)
+            # Transformación 2: Predecir score
+            predicted_score = self.transform_predict_score(features)
             
-            # Calcular tiempo de procesamiento
-            processing_time = (time.time() - start_time) * 1000  # ms
+            # Transformación 3: Calcular métricas
+            metrics = self.transform_calculate_metrics(
+                record['actual_score'], 
+                predicted_score
+            )
             
-            # Guardar en MySQL
-            self.save_to_mysql(record, predicted_score, processing_time)
+            # Obtener data_split del registro (viene del producer)
+            data_split = record.get('data_split', 'unknown')
+            
+            # ==================== LOAD ====================
+            self.load_to_mysql(record, predicted_score, data_split)
             
             # Log de resultado
             logger.info(
-                f"✅ Procesado #{record['record_id']}: "
+                f"✅ [ETL] Record #{record['record_id']}: "
                 f"{record['country']} ({record['year']}) | "
+                f"Split: {data_split} | "
                 f"Real: {record['actual_score']:.2f} | "
                 f"Predicho: {predicted_score:.2f} | "
-                f"Error: {abs(record['actual_score'] - predicted_score):.2f} | "
-                f"⏱️ {processing_time:.2f}ms"
+                f"Error: {metrics['prediction_error']:.2f}"
             )
             
         except Exception as e:
-            logger.error(f"❌ Error al procesar mensaje: {e}")
+            logger.error(f"❌ [ETL] Error al procesar mensaje: {e}")
     
-    def consume_and_predict(self, timeout_ms: int = 1000) -> None:
+    def start_etl_streaming(self, timeout_ms: int = 1000) -> None:
         """
-        Inicia el consumo de mensajes y procesamiento en tiempo real.
+        Inicia el procesamiento ETL en streaming de mensajes desde Kafka.
         
         Args:
             timeout_ms: Timeout para poll de mensajes
         """
-        logger.info("🚀 Iniciando consumo de mensajes...")
+        logger.info("="*80)
+        logger.info("� INICIANDO PIPELINE ETL - CONSUMER")
+        logger.info("="*80)
+        logger.info("🚀 Consumiendo mensajes desde Kafka...")
         logger.info("⏸️  Presiona Ctrl+C para detener")
+        logger.info("="*80)
         
         try:
             messages_processed = 0
+            train_processed = 0
+            test_processed = 0
+            total_error = 0.0
             
             for message in self.consumer:
-                # Procesar mensaje
-                self.process_message(message)
+                # Ejecutar ETL pipeline por mensaje
+                self.run_etl_on_message(message)
+                
+                # Actualizar estadísticas
                 messages_processed += 1
+                record = message.value
+                data_split = record.get('data_split', 'unknown')
+                
+                if data_split == 'train':
+                    train_processed += 1
+                elif data_split == 'test':
+                    test_processed += 1
                 
                 # Log cada 10 mensajes
                 if messages_processed % 10 == 0:
-                    logger.info(f"📊 Total procesados: {messages_processed}")
+                    logger.info(
+                        f"\n📊 [ESTADÍSTICAS] Total procesados: {messages_processed} | "
+                        f"Train: {train_processed} | Test: {test_processed}\n"
+                    )
                 
         except KeyboardInterrupt:
-            logger.warning("⚠️ Consumo interrumpido por usuario")
+            logger.warning("\n⚠️ Consumo interrumpido por usuario")
         except Exception as e:
             logger.error(f"❌ Error en consumo: {e}")
             raise
         finally:
+            logger.info("\n" + "="*80)
+            logger.info("✅ PIPELINE ETL FINALIZADO")
+            logger.info("="*80)
+            logger.info(f"📊 Total mensajes procesados: {messages_processed}")
+            logger.info(f"   - Train: {train_processed}")
+            logger.info(f"   - Test: {test_processed}")
+            logger.info("="*80)
+            
+            # Exportar datos a CSV antes de cerrar
+            if messages_processed > 0:
+                logger.info("\n📥 Exportando datos procesados a CSV...")
+                self.load_to_csv()
+            
             self.close()
     
     def close(self):
@@ -420,8 +575,8 @@ def main():
         mysql_config=MYSQL_CONFIG
     )
     
-    # Iniciar consumo
-    consumer.consume_and_predict()
+    # Iniciar pipeline ETL streaming
+    consumer.start_etl_streaming()
 
 
 if __name__ == "__main__":
