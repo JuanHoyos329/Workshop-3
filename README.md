@@ -256,8 +256,6 @@ preprocessor = ColumnTransformer(
 - Each country has a **specific coefficient** that adjusts the base prediction
 - Example: If Finland has a coefficient of +0.5, being Finland adds 0.5 points to the Happiness Score after considering GDP, Social Support, etc.
 
-```
-
 **Result:** A single `.pkl` file containing both the trained model and configured preprocessor, ensuring that transformations in production are identical to those in training.
 
 ### Evaluation Metrics
